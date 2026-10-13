@@ -23,6 +23,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import Context, Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
     async_track_state_change_event,
@@ -53,8 +54,16 @@ from .const import (
     SUBENTRY_ROOM,
     TICK_INTERVAL,
 )
-from .engine.engine import BoostError, Decision, Engine
-from .engine.model import HUB, CalendarEvent, FaultKey, FaultKind, RoomInputs, Snapshot
+from .engine.engine import BOILER_NAME, BoostError, Decision, Engine
+from .engine.model import (
+    HUB,
+    CalendarEvent,
+    FaultKey,
+    FaultKind,
+    LogEntry,
+    RoomInputs,
+    Snapshot,
+)
 from .engine.persist import (
     STORE_VERSION,
     dump,
@@ -166,7 +175,12 @@ async def async_turn_off_boiler(hass: HomeAssistant, entity_id: str) -> None:
         return
     hass.bus.async_fire(
         EVENT_LOGBOOK_ENTRY,
-        {"name": "Boiler", "message": RELEASE_MESSAGE, "domain": DOMAIN},
+        {
+            "name": BOILER_NAME,
+            "message": RELEASE_MESSAGE,
+            "domain": DOMAIN,
+            ATTR_ENTITY_ID: entity_id,
+        },
     )
 
 
@@ -197,7 +211,7 @@ class HeatingController:
         self._button_rooms = {
             room.button: room_id for room_id, room in self.rooms.items() if room.button
         }
-        self._owned_names = {self.boiler_entity: "Boiler"} | {
+        self._owned_names = {self.boiler_entity: BOILER_NAME} | {
             room.valve: f"{room.settings.name} valve" for room in self.rooms.values()
         }
         self._store: Store[dict[str, Any]] = Store(
@@ -396,7 +410,7 @@ class HeatingController:
         if self.active:
             self._apply(decision, now)
         for line in decision.log:
-            self._log_entry(line.name, line.message)
+            self._log_entry(line.name, line.message, self._log_entity(line))
         self._update_alerts(decision.faults)
         # Asking again would push the write back each time, so with frequent
         # sensor updates it might never happen.
@@ -526,6 +540,7 @@ class HeatingController:
             self._owned_names[entity_id],
             f"was switched {'on' if after else 'off'} by hand; "
             f"switching it back {'on' if desired else 'off'}",
+            entity_id,
         )
 
     @callback
@@ -560,12 +575,12 @@ class HeatingController:
                 continue
             self._raised[key] = message
             self._create_issue(key, message)
-            self._log_entry(NAME, f"fault: {message}")
+            self._log_entry(NAME, f"fault: {message}", self._fault_entity(key))
             self._notify(f"Heating fault: {message}")
         for key in [key for key in self._raised if key not in raised]:
             message = self._raised.pop(key)
             ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
-            self._log_entry(NAME, f"fault cleared: {message}")
+            self._log_entry(NAME, f"fault cleared: {message}", self._fault_entity(key))
             self._notify(f"Heating fault cleared: {message}")
 
     @callback
@@ -615,10 +630,32 @@ class HeatingController:
         return dump(self.engine) | {"events": dump_events(self.events)}
 
     @callback
-    def _log_entry(self, name: str, message: str) -> None:
-        self.hass.bus.async_fire(
-            EVENT_LOGBOOK_ENTRY, {"name": name, "message": message, "domain": DOMAIN}
-        )
+    def _log_entry(self, name: str, message: str, entity_id: str | None = None) -> None:
+        data = {"name": name, "message": message, "domain": DOMAIN}
+        if entity_id is not None:
+            data[ATTR_ENTITY_ID] = entity_id
+        self.hass.bus.async_fire(EVENT_LOGBOOK_ENTRY, data)
+
+    @callback
+    def _log_entity(self, line: LogEntry) -> str | None:
+        """The entity an engine logbook line is about: a room's or the boiler's status."""
+        if line.room_id is not None:
+            return self._own_entity("sensor", f"{line.room_id}_status")
+        if line.name == BOILER_NAME:
+            return self._own_entity("sensor", f"{self.entry.entry_id}_boiler_status")
+        return None
+
+    @callback
+    def _fault_entity(self, key: FaultKey) -> str | None:
+        """A room fault's room status, or the hub problem sensor for a hub fault."""
+        if key.scope == HUB:
+            return self._own_entity("binary_sensor", f"{self.entry.entry_id}_heating_problem")
+        return self._own_entity("sensor", f"{key.scope}_status")
+
+    @callback
+    def _own_entity(self, domain: str, unique_id: str) -> str | None:
+        """One of this integration's entities, if it is registered."""
+        return er.async_get(self.hass).async_get_entity_id(domain, DOMAIN, unique_id)
 
     @callback
     def _call_task(self, domain: str, service: str, data: dict[str, Any]) -> asyncio.Task[None]:

@@ -840,3 +840,44 @@ async def test_frequent_updates_do_not_postpone_saving(
     assert written  # saved while the sensor kept reporting
     assert written[0] <= SAVE_DELAY + 5
     assert len(written) <= 60 // SAVE_DELAY  # and not on every step
+
+
+def logged(logbook: list, name: str, start: str) -> dict:
+    """The data of the one logbook entry for name whose message starts with start."""
+    entries = [
+        event.data
+        for event in logbook
+        if event.data["name"] == name and event.data["message"].startswith(start)
+    ]
+    assert len(entries) == 1, entries
+    return entries[0]
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_logbook_entries_link_to_entities(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    await boiler_running(hass, freezer, loaded_entry)
+    assert logged(logbook, "Workshop", "boost until ")["entity_id"] == "sensor.workshop_status"
+    assert (
+        logged(logbook, "Boiler", "turned on ")["entity_id"]
+        == "sensor.makerspace_heating_boiler_status"
+    )
+    await hass.services.async_call(
+        "input_boolean", "turn_off", {"entity_id": VALVE}, blocking=True
+    )
+    await hass.async_block_till_done()
+    assert logged(logbook, "Workshop valve", "was switched off by hand")["entity_id"] == VALVE
+    hass.config_entries.async_update_entry(loaded_entry, options={CONF_CONTROL_MODE: MODE_SHADOW})
+    await hass.async_block_till_done()
+    assert logged(logbook, "Boiler", "turned off: ")["entity_id"] == BOILER
+
+
+async def test_logbook_entry_without_its_entity_names_none(
+    hass: HomeAssistant, controller: HeatingController
+) -> None:
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    controller.async_boost(ROOM_ID, None, "test")  # no entity platforms here
+    await hass.async_block_till_done()
+    assert "entity_id" not in logged(logbook, "Workshop", "boost until ")

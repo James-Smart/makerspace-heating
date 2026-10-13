@@ -225,3 +225,23 @@ async def test_removing_the_entry_deletes_its_issues(
     await hass.config_entries.async_remove(loaded_entry.entry_id)
     await hass.async_block_till_done()
     assert [key for key in ir.async_get(hass).issues if key[0] == DOMAIN] == []
+
+
+async def test_fault_logbook_entries_link_to_entities(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    await raise_fault(hass, freezer, TEMPERATURE)
+    await raise_fault(hass, freezer, BOILER)
+    hass.states.async_set(TEMPERATURE, "18.0", {"unit_of_measurement": "°C"})
+    await hass.async_block_till_done()
+    linked = {
+        event.data["message"]: event.data.get("entity_id")
+        for event in logbook
+        if event.data["name"] == "Makerspace Heating"
+    }
+    assert linked == {
+        f"fault: {MESSAGE}": "sensor.workshop_status",
+        "fault: Boiler switch unavailable": "binary_sensor.makerspace_heating_heating_problem",
+        f"fault cleared: {MESSAGE}": "sensor.workshop_status",
+    }

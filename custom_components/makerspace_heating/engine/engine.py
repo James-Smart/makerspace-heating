@@ -35,6 +35,9 @@ BOOST_OFF = "Off"
 PRESS_ORIGIN = "Button"
 """Who started a boost with the physical button (spec §7.4)."""
 
+BOILER_NAME = "Boiler"
+"""The name boiler logbook lines are written under."""
+
 
 class BoostError(Exception):
     """A boost request was rejected. The message is shown to the user."""
@@ -226,9 +229,9 @@ class Engine:
         if boiler.turned_on:
             self.stats.boiler_starts += 1
             names = ", ".join(sorted(calling.values()))
-            log.append(LogEntry("Boiler", f"turned on ({names} calling)"))
+            log.append(LogEntry(BOILER_NAME, f"turned on ({names} calling)"))
         if boiler.turned_off:
-            log.append(LogEntry("Boiler", "turned off (no rooms calling)"))
+            log.append(LogEntry(BOILER_NAME, "turned off (no rooms calling)"))
 
         raised = self.faults.update(conditions, settings, now)
         rooms_out: dict[str, RoomDecision] = {}
