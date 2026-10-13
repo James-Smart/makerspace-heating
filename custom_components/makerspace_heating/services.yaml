@@ -1,8 +1,13 @@
 boost:
-  target:
-    device:
-      integration: makerspace_heating
   fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          multiple: true
+          filter:
+            - integration: makerspace_heating
+              model: Room
     duration:
       required: false
       example: "01:00:00"

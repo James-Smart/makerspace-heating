@@ -169,6 +169,10 @@
       "name": "Boost",
       "description": "Start or restart a boost in one or more rooms.",
       "fields": {
+        "device_id": {
+          "name": "Rooms",
+          "description": "The rooms to boost."
+        },
         "duration": {
           "name": "Duration",
           "description": "How long to boost for. Defaults to the default boost length and must not exceed the maximum."
