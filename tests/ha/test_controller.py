@@ -972,7 +972,12 @@ def store_holds(hass_storage: dict, entry: MockConfigEntry, data: object) -> Non
         [1, 2],
         "nonsense",
         {"rooms": [1], "boiler": "x", "stats": 5, "last_step": {}, "events": "x", "handover": [1]},
-        {"rooms": {ROOM_ID: {"boost": {"ends": "x", "length_seconds": 1e300}}}, "events": [5]},
+        {"rooms": {ROOM_ID: {"boost": {"ends": "x", "length_seconds": 60}}}, "events": [5]},
+        {  # a valid end, so the overflow itself is reached
+            "rooms": {
+                ROOM_ID: {"boost": {"ends": "2099-01-01T00:00:00+00:00", "length_seconds": 1e300}}
+            }
+        },
     ],
 )
 async def test_odd_saved_state_does_not_stop_setup(
@@ -1136,3 +1141,27 @@ async def test_a_controller_that_cannot_be_built_releases_the_boiler(
     assert loaded_entry.state is ConfigEntryState.SETUP_ERROR
     assert hass.states.get(BOILER).state == boiler_after
     assert loaded_entry.entry_id not in hass.data.get(HANDOVER_KEY, {})
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE | {CONF_MIN_REST: 0}])
+async def test_a_new_valve_gets_the_full_valve_wait(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    """Valve tracking is not carried over to a room's new valve switch."""
+    await boiler_running(hass, freezer, loaded_entry)
+    await hass.services.async_call(  # the new relay happens to be on already
+        "input_boolean", "turn_on", {"entity_id": SPARE_VALVE}, blocking=True
+    )
+    result = await loaded_entry.start_subentry_reconfigure_flow(hass, ROOM_ID)
+    await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**WORKSHOP, CONF_VALVE: SPARE_VALVE}
+    )
+    await hass.async_block_till_done()
+    engine = loaded_entry.runtime_data.engine
+    assert engine.mismatch_since == {}
+    for _ in range(5):
+        assert hass.states.get(BOILER).state == "off"
+        await advance(hass, freezer, timedelta(seconds=30))
+    assert hass.states.get(BOILER).state == "off"
+    await advance(hass, freezer, timedelta(seconds=30))  # watched open for 3 min
+    assert hass.states.get(BOILER).state == "on"

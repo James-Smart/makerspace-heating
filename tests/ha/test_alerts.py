@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.config_entries import ConfigEntryState
+from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
@@ -25,6 +25,7 @@ from custom_components.makerspace_heating.const import (
     CONF_NOTIFY_ENTITIES,
     DOMAIN,
     EVENT_LOGBOOK_ENTRY,
+    HANDOVER_KEY,
     MODE_ACTIVE,
 )
 from custom_components.makerspace_heating.controller import HeatingController
@@ -271,3 +272,31 @@ async def test_reload_does_not_repeat_a_calendar_fault(
     assert [call.data["message"] for call in send_message] == [
         "Heating fault: Calendar could not be read for over 30 min"
     ]
+
+
+@pytest.mark.parametrize("entry_options", [NOTIFY])
+async def test_disabling_never_hands_over(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await raise_fault(hass, freezer, TEMPERATURE)
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is not None
+    await hass.config_entries.async_set_disabled_by(
+        loaded_entry.entry_id, ConfigEntryDisabler.USER
+    )
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is None
+    assert loaded_entry.entry_id not in hass.data.get(HANDOVER_KEY, {})
+
+
+@pytest.mark.parametrize("entry_options", [NOTIFY])
+async def test_going_active_does_not_repeat_a_fault(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    send_message = async_mock_service(hass, "notify", "send_message")
+    await raise_fault(hass, freezer, TEMPERATURE)  # raised while in Shadow
+    hass.config_entries.async_update_entry(loaded_entry, options=NOTIFY | ACTIVE)
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data.active
+    await advance(hass, freezer, timedelta(minutes=10))
+    assert messages(send_message, "Heating fault") == [f"Heating fault: {MESSAGE}"]
+    assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is not None
