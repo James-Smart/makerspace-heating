@@ -209,6 +209,7 @@ class HeatingController:
         self._desired: dict[str, bool] = {}
         self._sent: dict[str, tuple[bool, datetime]] = {}
         self._commands: set[asyncio.Task[None]] = set()
+        self._save_pending = False
         self._fetching = False
         self._seen_unknown_tags: set[str] = set()
         self._closed = False
@@ -397,7 +398,11 @@ class HeatingController:
         for line in decision.log:
             self._log_entry(line.name, line.message)
         self._update_alerts(decision.faults)
-        self._store.async_delay_save(self._saved_state, SAVE_DELAY)
+        # Asking again would push the write back each time, so with frequent
+        # sensor updates it might never happen.
+        if not self._save_pending:
+            self._save_pending = True
+            self._store.async_delay_save(self._data_to_save, SAVE_DELAY)
         for listener in list(self._listeners):
             listener()
 
@@ -597,6 +602,12 @@ class HeatingController:
         for tag in sorted(unknown - self._seen_unknown_tags):
             _LOGGER.warning("A calendar event uses #%s, which matches no room", tag)
         self._seen_unknown_tags |= unknown
+
+    @callback
+    def _data_to_save(self) -> dict[str, Any]:
+        """Called by the Store when it writes a delayed save."""
+        self._save_pending = False
+        return self._saved_state()
 
     @callback
     def _saved_state(self) -> dict[str, Any]:

@@ -31,6 +31,7 @@ from custom_components.makerspace_heating.const import (
     MODE_ACTIVE,
     MODE_PAUSED,
     MODE_SHADOW,
+    SAVE_DELAY,
 )
 from custom_components.makerspace_heating.controller import (
     HeatingController,
@@ -48,6 +49,7 @@ from .conftest import (
     NEW_BOILER,
     ROOM_ID,
     SPARE_VALVE,
+    TEMPERATURE,
     VALVE,
     WORKSHOP,
 )
@@ -816,3 +818,25 @@ async def test_reload_keeps_timing_a_stuck_valve(
     await advance(hass, freezer, timedelta(seconds=30))  # 90 s without following commands
     room = loaded_entry.runtime_data.decision.rooms[ROOM_ID]
     assert room.status == "Fault: valve not responding"
+
+
+async def test_frequent_updates_do_not_postpone_saving(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    controller: HeatingController,
+    hass_storage: dict,
+) -> None:
+    key = f"{DOMAIN}.{controller.entry.entry_id}"
+    assert key not in hass_storage
+    written: list[int] = []
+    for seconds in range(5, 65, 5):
+        freezer.tick(timedelta(seconds=5))
+        hass.states.async_set(TEMPERATURE, f"18.{seconds}", {"unit_of_measurement": "°C"})
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        if key in hass_storage:
+            written.append(seconds)
+            hass_storage.pop(key)
+    assert written  # saved while the sensor kept reporting
+    assert written[0] <= SAVE_DELAY + 5
+    assert len(written) <= 60 // SAVE_DELAY  # and not on every step
