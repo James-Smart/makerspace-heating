@@ -1,0 +1,77 @@
+# Makerspace Heating dashboard (built-in cards only).
+#
+# Settings → Dashboards → Add dashboard → New dashboard from scratch.
+# Open it, then ⋮ → Edit dashboard → ⋮ → Raw configuration editor, and paste this.
+# Copy the "Workshop" section once per room and replace "workshop" with the
+# room's entity prefix (the room name, lowercase, spaces as underscores).
+# Replace sensor.workshop_temperature with the room's own temperature sensor.
+title: Heating
+views:
+  - title: Heating
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Boiler
+          - type: tile
+            entity: sensor.makerspace_heating_boiler_status
+            grid_options:
+              columns: full
+          - type: tile
+            entity: sensor.makerspace_heating_upcoming_heating
+            grid_options:
+              columns: full
+          - type: tile
+            entity: binary_sensor.makerspace_heating_heating_problem
+          - type: tile
+            entity: sensor.makerspace_heating_boiler_starts_today
+          - type: statistics-graph
+            title: Boiler hours per day
+            entities:
+              - sensor.makerspace_heating_boiler_on_time_today
+            stat_types:
+              - change
+            period: day
+            chart_type: bar
+            days_to_show: 14
+      - type: grid
+        cards:
+          - type: heading
+            heading: Workshop
+          - type: tile
+            entity: sensor.workshop_status
+            grid_options:
+              columns: full
+          - type: tile
+            entity: button.workshop_boost
+            name: Boost 30 min
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.workshop_boost
+          - type: tile
+            entity: select.workshop_boost_for
+            features:
+              - type: select-options
+          - type: tile
+            entity: switch.workshop_enabled
+          - type: tile
+            entity: binary_sensor.workshop_problem
+          - type: history-graph
+            title: Temperature and target
+            hours_to_show: 24
+            entities:
+              - entity: sensor.workshop_temperature
+              - entity: sensor.workshop_target_temperature
+          - type: statistics-graph
+            title: Heating hours per day
+            entities:
+              - sensor.workshop_heating_time_today
+            stat_types:
+              - change
+            period: day
+            chart_type: bar
+            days_to_show: 14
