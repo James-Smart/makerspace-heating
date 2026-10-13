@@ -67,18 +67,23 @@ def restore(
     for name, section in sections.items():
         try:
             section()
-        except (AttributeError, KeyError, TypeError, ValueError):
+        except Exception:  # noqa: BLE001 - odd saved state must never stop setup
             _LOGGER.warning("Ignoring unreadable saved state in %s", name)
 
 
 def _restore_rooms(engine: Engine, data: Mapping[str, Any], now: datetime) -> None:
+    # Read every room before changing any, so a bad one skips the section cleanly.
+    restored: dict[str, tuple[bool, Boost | None]] = {}
     for room_id, item in data.get("rooms", {}).items():
-        state = engine.room_state.get(room_id)
-        if state is None:
+        if room_id not in engine.room_state:
             continue
-        state.enabled = bool(item.get("enabled", True))
+        enabled = bool(item.get("enabled", True))
         boost = _load_boost(item.get("boost"))
-        state.boost = boost if boost is not None and boost.ends > now and state.enabled else None
+        running = boost is not None and boost.ends > now and enabled
+        restored[room_id] = (enabled, boost if running else None)
+    for room_id, (enabled, boost) in restored.items():
+        state = engine.room_state[room_id]
+        state.enabled, state.boost = enabled, boost
 
 
 def _restore_boiler(
@@ -249,7 +254,7 @@ def load_events(raw: Any) -> tuple[CalendarEvent, ...]:
                     tags=frozenset(str(tag) for tag in tags),
                 )
             )
-        except (AttributeError, KeyError, TypeError, ValueError):
+        except Exception:  # noqa: BLE001 - a bad item must not lose the others
             continue
     return tuple(events)
 
@@ -259,7 +264,7 @@ def _dump_time(moment: datetime | None) -> str | None:
 
 
 def _load_time(text: str | None) -> datetime | None:
-    return datetime.fromisoformat(text) if text else None
+    return _load_moment(text) if text else None
 
 
 def _load_moment(text: Any) -> datetime:
@@ -292,7 +297,7 @@ def _load_boost(item: Mapping[str, Any] | None) -> Boost | None:
     if not item:
         return None
     return Boost(
-        ends=datetime.fromisoformat(item["ends"]),
+        ends=_load_moment(item["ends"]),
         length=timedelta(seconds=float(item["length_seconds"])),
         origin=str(item.get("origin", "Unknown")),
     )

@@ -189,6 +189,44 @@ def test_bad_sections_are_skipped() -> None:
     assert fresh.stats.day is None
 
 
+def test_odd_types_and_overflows_are_skipped() -> None:
+    fresh = make_engine(at(10))
+    huge = {"ends": at(11).isoformat(), "length_seconds": 1e300, "origin": "x"}
+    restore(
+        fresh,
+        {
+            "rooms": {"w": {"enabled": False}, "m": {"enabled": True, "boost": huge}},
+            "boiler": ["nonsense"],
+            "stats": {"day": "2026-10-13", "rooms": {"w": 5}},
+            "last_step": 7,
+        },
+        at(10),
+    )
+    assert fresh.room_state["w"].enabled is True  # the whole section is skipped
+    assert fresh.room_state["m"].boost is None
+    assert fresh.boiler.last_off is None
+    assert fresh.stats.day is None
+    assert fresh.last_step is None
+
+
+def test_times_without_a_time_zone_are_skipped() -> None:
+    naive = "2026-10-13T09:58:00"
+    fresh = make_engine(at(10))
+    restore(
+        fresh,
+        {
+            "rooms": {"w": {"enabled": True, "boost": {"ends": naive, "length_seconds": 60}}},
+            "boiler": {"on": False, "last_off": naive},
+            "last_step": naive,
+        },
+        at(10),
+    )
+    assert fresh.room_state["w"].boost is None
+    assert fresh.boiler.last_off is None
+    assert fresh.last_step is None
+    fresh.step(snap(at(10), valve=False))  # nothing left to trip over
+
+
 def test_boost_length_survives() -> None:
     engine = make_engine()
     engine.boost("w", timedelta(hours=1), "Dashboard (Sam)", at(10))

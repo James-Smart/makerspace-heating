@@ -98,11 +98,12 @@ _HANDOVER = "handover"
 def _fresh_handover(saved: Mapping[str, Any], now: datetime) -> Mapping[str, Any] | None:
     """The handover left by a reload moments ago, or None (a restart, or unreadable)."""
     handover = saved.get(_HANDOVER)
-    if not isinstance(handover, Mapping):
+    if handover is None:
         return None
     try:
         fresh = now - datetime.fromisoformat(handover["at"]) <= HANDOVER_WINDOW
     except (KeyError, TypeError, ValueError):
+        _LOGGER.warning("Ignoring an unreadable handover in the saved state")
         return None
     return handover if fresh else None
 
@@ -243,6 +244,9 @@ class HeatingController:
         """Restore state, subscribe to inputs and make the first decision."""
         now = dt_util.now()
         saved = await self._store.async_load()
+        if saved is not None and not isinstance(saved, dict):
+            _LOGGER.warning("Ignoring unreadable saved state: %.80r", saved)
+            saved = None
         handover: Mapping[str, Any] | None = None
         if saved:
             handover = _fresh_handover(saved, now)

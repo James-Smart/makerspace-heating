@@ -41,6 +41,7 @@ from custom_components.makerspace_heating.controller import (
 )
 from custom_components.makerspace_heating.engine.engine import Engine
 from custom_components.makerspace_heating.engine.model import Source
+from custom_components.makerspace_heating.engine.persist import STORE_VERSION
 
 from .conftest import (
     BOILER,
@@ -881,3 +882,54 @@ async def test_logbook_entry_without_its_entity_names_none(
     controller.async_boost(ROOM_ID, None, "test")  # no entity platforms here
     await hass.async_block_till_done()
     assert "entity_id" not in logged(logbook, "Workshop", "boost until ")
+
+
+def store_holds(hass_storage: dict, entry: MockConfigEntry, data: object) -> None:
+    key = f"{DOMAIN}.{entry.entry_id}"
+    hass_storage[key] = {"version": STORE_VERSION, "minor_version": 1, "key": key, "data": data}
+
+
+@pytest.mark.parametrize(
+    "saved",
+    [
+        [1, 2],
+        "nonsense",
+        {"rooms": [1], "boiler": "x", "stats": 5, "last_step": {}, "events": "x", "handover": [1]},
+        {"rooms": {ROOM_ID: {"boost": {"ends": "x", "length_seconds": 1e300}}}, "events": [5]},
+    ],
+)
+async def test_odd_saved_state_does_not_stop_setup(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    devices: None,
+    calendar_calls: list,
+    hass_storage: dict,
+    saved: object,
+) -> None:
+    store_holds(hass_storage, entry, saved)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get("sensor.workshop_status").state == "Shadow: Frost protection"
+
+
+async def test_odd_handover_does_not_stop_setup(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    devices: None,
+    calendar_calls: list,
+    hass_storage: dict,
+) -> None:
+    handover = {
+        "at": dt_util.now().isoformat(),
+        "mode": MODE_SHADOW,
+        "boiler": BOILER,
+        "valves": {ROOM_ID: VALVE},
+        "raised": [{"scope": ROOM_ID, "kind": "no_such_kind"}, 5],
+        "engine": {"faults_started_at": 5, "warming": "x", "commanded": [1]},
+    }
+    store_holds(hass_storage, entry, {"boiler": {"on": True}, "handover": handover})
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.runtime_data._raised == {}
