@@ -137,6 +137,18 @@ async def test_shadow_mode_sends_no_commands(
     assert hass.states.get(VALVE).state == "off"
 
 
+async def test_shadow_mode_never_switches_boiler(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, controller: HeatingController
+) -> None:
+    controller.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    await advance(hass, freezer, timedelta(seconds=30))  # simulated valve opens
+    await advance(hass, freezer, timedelta(minutes=3))
+    assert controller.decision.boiler_on
+    assert hass.states.get(BOILER).state == "off"
+    assert hass.states.get(VALVE).state == "off"
+
+
 @pytest.mark.parametrize("entry_options", [ACTIVE])
 async def test_active_mode_opens_valve_then_fires_boiler(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory, controller: HeatingController
