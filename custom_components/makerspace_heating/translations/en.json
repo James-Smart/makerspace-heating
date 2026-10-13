@@ -108,10 +108,12 @@
       },
       "error": {
         "name_required": "Enter a room name.",
+        "name_in_use": "Another room already has this name.",
         "invalid_tag": "Use lowercase letters, digits and hyphens only.",
         "tag_in_use": "Another room already uses this tag.",
         "valve_is_boiler": "This switch is the boiler.",
         "valve_in_use": "Another room already uses this valve.",
+        "button_in_use": "Another room already uses this button.",
         "frost_above_targets": "The frost target must not be above the boost and event targets."
       },
       "abort": {

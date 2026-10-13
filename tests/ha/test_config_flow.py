@@ -32,7 +32,7 @@ from custom_components.makerspace_heating.const import (
     SUBENTRY_ROOM,
 )
 
-from .conftest import BOILER, CALENDAR, ROOM_ID, VALVE, WORKSHOP
+from .conftest import BOILER, BUTTON, CALENDAR, ROOM_ID, VALVE, WORKSHOP
 
 NEW_ROOM = {
     CONF_NAME: "Main Space",
@@ -130,6 +130,8 @@ async def test_add_room(hass: HomeAssistant, entry: MockConfigEntry) -> None:
         ({CONF_VALVE: BOILER}, CONF_VALVE, "valve_is_boiler"),
         ({CONF_FROST_TARGET: 21.0}, CONF_FROST_TARGET, "frost_above_targets"),
         ({CONF_NAME: "  "}, CONF_NAME, "name_required"),
+        ({CONF_NAME: " WORKSHOP "}, CONF_NAME, "name_in_use"),
+        ({CONF_BUTTON: BUTTON}, CONF_BUTTON, "button_in_use"),
     ],
 )
 async def test_room_validation(
@@ -154,3 +156,24 @@ async def test_reconfigure_room(hass: HomeAssistant, entry: MockConfigEntry) -> 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reconfigure_successful"
     assert entry.subentries[ROOM_ID].data[CONF_EVENT_TARGET] == 21.0
+
+
+async def test_reconfigure_room_checks_other_rooms(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    result = await hass.config_entries.subentries.async_init(
+        (entry.entry_id, SUBENTRY_ROOM), context={"source": SOURCE_USER}
+    )
+    await hass.config_entries.subentries.async_configure(result["flow_id"], NEW_ROOM)
+    main_id = next(sub_id for sub_id, sub in entry.subentries.items() if sub.title == "Main Space")
+    result = await entry.start_subentry_reconfigure_flow(hass, main_id)
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**NEW_ROOM, CONF_NAME: "workshop", CONF_BUTTON: BUTTON}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {CONF_NAME: "name_in_use", CONF_BUTTON: "button_in_use"}
+    result = await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**NEW_ROOM, CONF_NAME: "Main Space", CONF_BUTTON: "event.main_button"}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert entry.subentries[main_id].data[CONF_BUTTON] == "event.main_button"

@@ -283,8 +283,11 @@ def _validate_room(
         for sub_id, sub in entry.subentries.items()
         if sub_id != editing and sub.subentry_type == SUBENTRY_ROOM
     ]
-    if not data[CONF_NAME]:
+    name = data[CONF_NAME].casefold()
+    if not name:
         errors[CONF_NAME] = "name_required"
+    elif any(str(other.get(CONF_NAME, "")).strip().casefold() == name for other in others):
+        errors[CONF_NAME] = "name_in_use"
     if not TAG_FORMAT.match(data[CONF_TAG]):
         errors[CONF_TAG] = "invalid_tag"
     elif any(other.get(CONF_TAG) == data[CONF_TAG] for other in others):
@@ -293,6 +296,9 @@ def _validate_room(
         errors[CONF_VALVE] = "valve_is_boiler"
     elif any(other.get(CONF_VALVE) == data[CONF_VALVE] for other in others):
         errors[CONF_VALVE] = "valve_in_use"
+    button = data.get(CONF_BUTTON)
+    if button and any(other.get(CONF_BUTTON) == button for other in others):
+        errors[CONF_BUTTON] = "button_in_use"
     if data[CONF_FROST_TARGET] > min(data[CONF_BOOST_TARGET], data[CONF_EVENT_TARGET]):
         errors[CONF_FROST_TARGET] = "frost_above_targets"
     return errors
