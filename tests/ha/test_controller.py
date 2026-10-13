@@ -20,6 +20,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.makerspace_heating.const import (
+    COMMAND_WAIT,
     CONF_BOILER,
     CONF_CALENDAR,
     CONF_CONTROL_MODE,
@@ -1072,3 +1073,37 @@ async def test_changing_the_boiler_switch_keeps_the_held_valve_open(
         await advance(hass, freezer, timedelta(seconds=30))
     assert hass.states.get(VALVE).state == "off"
     assert hass.states.get(NEW_BOILER).state == "off"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_release_cancels_a_command_that_never_finishes(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, controller: HeatingController
+) -> None:
+    controller.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    started = asyncio.Event()
+
+    async def hung_turn_on(call: ServiceCall) -> None:
+        started.set()
+        await asyncio.Event().wait()  # a Shelly that never answers
+        hass.states.async_set(call.data["entity_id"], "on")
+
+    hass.services.async_register("input_boolean", "turn_on", hung_turn_on)
+    freezer.tick(timedelta(minutes=3))
+    controller.async_step()
+    await started.wait()
+    (command,) = controller._commands
+    try:
+        shutdown = hass.async_create_task(
+            controller.async_shutdown(release_boiler=True, handover=False)
+        )
+        await asyncio.sleep(0)
+        assert not shutdown.done()  # waiting for the command
+        freezer.tick(COMMAND_WAIT + timedelta(seconds=1))
+        async_fire_time_changed(hass)
+        await shutdown
+        assert command.cancelled()
+    finally:
+        command.cancel()  # never leave it for teardown to wait on
+    await hass.async_block_till_done()
+    assert hass.states.get(BOILER).state == "off"

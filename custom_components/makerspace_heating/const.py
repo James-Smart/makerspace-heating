@@ -93,6 +93,8 @@ HANDOVER_WINDOW: Final = timedelta(minutes=2)
 """A handover left this recently is a reload; an older one is ignored."""
 COMMAND_WAIT: Final = timedelta(seconds=10)
 """How long stopping waits for valve and boiler commands still in flight."""
+COMMAND_CANCEL_WAIT: Final = timedelta(seconds=1)
+"""How long stopping then waits for the commands it cancelled to stop."""
 
 EVENT_LOGBOOK_ENTRY: Final = "logbook_entry"
 SERVICE_BOOST: Final = "boost"

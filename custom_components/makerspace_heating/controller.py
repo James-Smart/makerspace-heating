@@ -39,6 +39,7 @@ from .const import (
     CALENDAR_REFRESH,
     CALENDAR_TIMEOUT,
     CALENDAR_WINDOW,
+    COMMAND_CANCEL_WAIT,
     COMMAND_WAIT,
     CONF_BOILER,
     CONF_CALENDAR,
@@ -297,10 +298,14 @@ class HeatingController:
             )
             if pending:
                 _LOGGER.warning(
-                    "%d valve or boiler commands still running after %s",
+                    "%d valve or boiler commands still running after %s; cancelling them",
                     len(pending),
                     format_duration(COMMAND_WAIT),
                 )
+                # Otherwise a late "turn on" could still undo the release below.
+                for task in pending:
+                    task.cancel()
+                await asyncio.wait(pending, timeout=COMMAND_CANCEL_WAIT.total_seconds())
         if release_boiler:
             await async_turn_off_boiler(self.hass, self.boiler_entity)
             if self.engine.boiler.on:
