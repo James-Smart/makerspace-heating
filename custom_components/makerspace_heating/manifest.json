@@ -1,0 +1,14 @@
+{
+  "domain": "makerspace_heating",
+  "name": "Makerspace Heating",
+  "codeowners": ["@CHANGE-ME"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/CHANGE-ME/fizz-hass",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/CHANGE-ME/fizz-hass/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}
