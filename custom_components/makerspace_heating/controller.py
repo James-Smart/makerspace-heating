@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -42,6 +42,7 @@ from .const import (
     CONF_CALENDAR,
     DOMAIN,
     EVENT_LOGBOOK_ENTRY,
+    HANDOVER_WINDOW,
     MODE_ACTIVE,
     MODE_PAUSED,
     MODE_SHADOW,
@@ -53,7 +54,7 @@ from .const import (
 )
 from .engine.engine import BoostError, Decision, Engine
 from .engine.model import CalendarEvent, FaultKey, RoomInputs, Snapshot
-from .engine.persist import STORE_VERSION, dump, restore
+from .engine.persist import STORE_VERSION, dump, dump_events, load_events, restore
 from .engine.schedule import UpcomingEvent, parse_events
 from .engine.schedule import upcoming as list_upcoming
 from .engine.timefmt import format_duration
@@ -68,6 +69,18 @@ _PREFIXES = {MODE_SHADOW: "Shadow: ", MODE_PAUSED: "Paused: "}
 
 _EXPECTED_CALENDAR_ERRORS = (HomeAssistantError, probatio.Invalid, KeyError, TypeError)
 """Calendar fetch errors that are logged without a traceback."""
+
+_HANDOVER_AT = "handover_at"
+"""Saved-state key: when an unload or reload saved it (absent after a restart)."""
+
+
+def _is_handover(saved: Mapping[str, Any], now: datetime) -> bool:
+    """Whether saved state was left by a reload moments ago rather than a restart."""
+    try:
+        handover_at = datetime.fromisoformat(saved[_HANDOVER_AT])
+        return now - handover_at <= HANDOVER_WINDOW
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def read_temperature(state: State | None) -> float | None:
@@ -181,7 +194,8 @@ class HeatingController:
         now = dt_util.now()
         saved = await self._store.async_load()
         if saved:
-            restore(self.engine, saved, now)
+            restore(self.engine, saved, now, handover=_is_handover(saved, now))
+            self.events = load_events(saved.get("events"))
         tracked = [self.boiler_entity, self.calendar_entity]
         for room in self.rooms.values():
             tracked += [room.valve, room.temperature]
@@ -195,8 +209,12 @@ class HeatingController:
         ]
         self.async_step()
 
-    async def async_shutdown(self) -> None:
-        """Stop listening and save state. Safe to call twice."""
+    async def async_shutdown(self, *, handover: bool = True) -> None:
+        """Stop listening and save state (on unload or reload only). Safe to call twice.
+
+        With handover the saved state is marked so that a controller set up
+        straight after (a reload) carries on with a running boiler.
+        """
         self._closed = True
         for unsubscribe in self._unsubscribe:
             unsubscribe()
@@ -204,7 +222,10 @@ class HeatingController:
         for key in self._raised:
             ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
         self._raised.clear()
-        await self._store.async_save(dump(self.engine))
+        data = self._saved_state()
+        if handover:
+            data[_HANDOVER_AT] = dt_util.now().isoformat()
+        await self._store.async_save(data)
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -280,7 +301,7 @@ class HeatingController:
         for line in decision.log:
             self._log_entry(line.name, line.message)
         self._update_alerts(decision.faults)
-        self._store.async_delay_save(lambda: dump(self.engine), SAVE_DELAY)
+        self._store.async_delay_save(self._saved_state, SAVE_DELAY)
         for listener in list(self._listeners):
             listener()
 
@@ -448,6 +469,11 @@ class HeatingController:
         for tag in sorted(unknown - self._seen_unknown_tags):
             _LOGGER.warning("A calendar event uses #%s, which matches no room", tag)
         self._seen_unknown_tags |= unknown
+
+    @callback
+    def _saved_state(self) -> dict[str, Any]:
+        """The engine state plus the calendar event cache, without a handover mark."""
+        return dump(self.engine) | {"events": dump_events(self.events)}
 
     @callback
     def _log_entry(self, name: str, message: str) -> None:

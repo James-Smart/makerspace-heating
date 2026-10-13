@@ -5,12 +5,18 @@ from datetime import timedelta
 
 from custom_components.makerspace_heating.engine.engine import Engine
 from custom_components.makerspace_heating.engine.model import (
+    CalendarEvent,
     GlobalSettings,
     RoomInputs,
     RoomSettings,
     Snapshot,
 )
-from custom_components.makerspace_heating.engine.persist import dump, restore
+from custom_components.makerspace_heating.engine.persist import (
+    dump,
+    dump_events,
+    load_events,
+    restore,
+)
 from tests.unit.helpers import at
 
 WORKSHOP = RoomSettings(room_id="w", name="Workshop", tag="workshop")
@@ -51,6 +57,74 @@ def test_round_trip_while_boiler_was_on() -> None:
     assert fresh.boiler.held_rooms == {"w"}
     assert fresh.boiler.hold_until == at(10, 7)
     assert fresh.last_step == engine.last_step
+
+
+def test_handover_keeps_a_running_boiler_on() -> None:
+    engine = make_engine()
+    engine.press("w", at(10))
+    engine.step(snap(at(10), valve=True))
+    engine.step(snap(at(10, 3), valve=True))
+    assert engine.boiler.on
+
+    fresh = make_engine(at(10, 4))
+    restore(fresh, saved(engine), at(10, 4), handover=True)
+
+    assert fresh.boiler.on is True
+    assert fresh.boiler.last_on == at(10, 3)
+    assert fresh.boiler.last_off is None
+    assert fresh.boiler.last_open_calling == {"w"}
+    decision = fresh.step(snap(at(10, 4), valve=True))
+    assert decision.boiler_on
+    assert decision.boiler_status == "On: Workshop calling"
+    assert fresh.stats.boiler_starts == 1
+
+
+def test_handover_stops_a_boiler_whose_open_rooms_have_gone() -> None:
+    engine = make_engine()
+    engine.press("w", at(10))
+    engine.step(snap(at(10), valve=True))
+    engine.step(snap(at(10, 3), valve=True))
+    fresh = Engine(GlobalSettings(), [MAIN], at(10, 4))
+    restore(fresh, saved(engine), at(10, 4), handover=True)
+    assert fresh.boiler.on is False
+    assert fresh.boiler.last_off == at(10, 4)
+
+
+def test_handover_keeps_held_valves_of_a_stopped_boiler() -> None:
+    engine = make_engine()
+    engine.boiler.last_off = at(9, 59)
+    engine.boiler.held_rooms = frozenset({"w"})
+    engine.boiler.hold_until = at(10, 2)
+    fresh = make_engine(at(10))
+    restore(fresh, saved(engine), at(10), handover=True)
+    assert fresh.boiler.on is False
+    assert fresh.boiler.last_off == at(9, 59)
+    assert fresh.boiler.held_rooms == {"w"}
+    assert fresh.boiler.hold_until == at(10, 2)
+
+
+def test_events_round_trip() -> None:
+    events = (
+        CalendarEvent("Pottery night", at(19), at(21, 30), frozenset({"workshop", "main"})),
+        CalendarEvent("Untitled event", at(22), at(23)),
+    )
+    raw = json.loads(json.dumps(dump_events(events)))
+    assert load_events(raw) == events
+
+
+def test_malformed_saved_events_are_skipped() -> None:
+    good = CalendarEvent("Class", at(10), at(12), frozenset({"workshop"}))
+    raw = [
+        "nonsense",
+        {"summary": "No end", "start": at(10).isoformat(), "tags": []},
+        {"summary": "Naive", "start": "2026-10-13T10:00:00", "end": "2026-10-13T11:00:00"},
+        {"summary": "Bad", "start": "garbage", "end": at(11).isoformat(), "tags": []},
+        {"summary": "Tags", "start": at(10).isoformat(), "end": at(11).isoformat(), "tags": "w"},
+        *dump_events([good]),
+    ]
+    assert load_events(raw) == (good,)
+    assert load_events(None) == ()
+    assert load_events({"not": "a list"}) == ()
 
 
 def test_boiler_off_times_are_kept_when_it_was_off() -> None:

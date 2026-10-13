@@ -81,6 +81,8 @@ CALENDAR_TIMEOUT: Final = timedelta(seconds=60)
 BUTTON_DEBOUNCE: Final = timedelta(seconds=2)
 RESEND_INTERVAL: Final = timedelta(seconds=30)
 SAVE_DELAY: Final = 10  # seconds
+HANDOVER_WINDOW: Final = timedelta(minutes=2)
+"""State saved by a reload this recently is a handover, not a restart."""
 
 EVENT_LOGBOOK_ENTRY: Final = "logbook_entry"
 SERVICE_BOOST: Final = "boost"

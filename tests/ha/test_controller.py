@@ -7,24 +7,30 @@ from datetime import timedelta
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import HomeAssistant, ServiceCall, State, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
     async_capture_events,
     async_fire_time_changed,
 )
 
 from custom_components.makerspace_heating.const import (
     CONF_CONTROL_MODE,
+    CONF_MARGIN,
+    DOMAIN,
     EVENT_LOGBOOK_ENTRY,
     MODE_ACTIVE,
 )
 from custom_components.makerspace_heating.controller import (
     HeatingController,
+    _is_handover,
     is_press,
     read_temperature,
 )
+from custom_components.makerspace_heating.engine.engine import Engine
 from custom_components.makerspace_heating.engine.model import Source
 
 from .conftest import BOILER, BUTTON, CALENDAR, ROOM_ID, VALVE
@@ -316,6 +322,123 @@ async def test_boost_survives_restart(
     await second.async_setup()
     assert second.decision.rooms[ROOM_ID].boost.length == timedelta(hours=1)
     await second.async_shutdown()
+
+
+async def boiler_running(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, entry: MockConfigEntry
+) -> None:
+    """Boost the Workshop and wait for the (Active) boiler to fire."""
+    entry.runtime_data.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    await advance(hass, freezer, timedelta(seconds=30))
+    await advance(hass, freezer, timedelta(minutes=3))
+    assert hass.states.get(BOILER).state == "on"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_settings_change_does_not_short_cycle_boiler(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    await advance(hass, freezer, timedelta(seconds=30))
+    old = loaded_entry.runtime_data
+    changes = async_capture_events(hass, EVENT_STATE_CHANGED)
+    hass.config_entries.async_update_entry(loaded_entry, options=ACTIVE | {CONF_MARGIN: 0.5})
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data is not old
+    await advance(hass, freezer, timedelta(seconds=30))
+    assert hass.states.get(BOILER).state == "on"
+    assert hass.states.get(VALVE).state == "on"
+    assert loaded_entry.runtime_data.decision.boiler_on
+    assert (
+        hass.states.get("sensor.makerspace_heating_boiler_status").state
+        == "On: Workshop calling"
+    )
+    assert not [
+        event
+        for event in changes
+        if event.data["entity_id"] in (BOILER, VALVE)
+        and event.data["new_state"].state != "on"
+    ]
+
+
+async def test_only_unload_marks_a_handover(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    controller: HeatingController,
+    hass_storage: dict,
+) -> None:
+    key = f"{DOMAIN}.{controller.entry.entry_id}"
+    await advance(hass, freezer, timedelta(seconds=11))
+    assert "handover_at" not in hass_storage[key]["data"]
+    assert hass_storage[key]["data"]["events"] == []
+    await controller.async_shutdown()
+    assert "handover_at" in hass_storage[key]["data"]
+
+
+def test_is_handover() -> None:
+    now = dt_util.now()
+    assert _is_handover({"handover_at": (now - timedelta(minutes=2)).isoformat()}, now)
+    assert not _is_handover(
+        {"handover_at": (now - timedelta(minutes=2, seconds=1)).isoformat()}, now
+    )
+    assert not _is_handover({}, now)
+    assert not _is_handover({"handover_at": "garbage"}, now)
+
+
+async def test_going_active_does_not_take_over_a_simulated_boiler(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    loaded_entry.runtime_data.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    await advance(hass, freezer, timedelta(seconds=30))
+    await advance(hass, freezer, timedelta(minutes=3))
+    assert loaded_entry.runtime_data.decision.boiler_on  # Shadow: simulated only
+    hass.config_entries.async_update_entry(loaded_entry, options=ACTIVE)
+    await hass.async_block_till_done()
+    assert hass.states.get(VALVE).state == "on"
+    assert hass.states.get(BOILER).state == "off"  # the valve has only just opened
+    assert not loaded_entry.runtime_data.decision.boiler_on
+
+
+async def test_reload_keeps_calendar_events(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    calendar_events: list[dict],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = dt_util.now()
+    calendar_events.append(
+        {
+            "start": (now - timedelta(minutes=5)).isoformat(),
+            "end": (now + timedelta(hours=1)).isoformat(),
+            "summary": "Pottery night #workshop",
+        }
+    )
+    await loaded_entry.runtime_data.async_refresh_calendar()
+    assert loaded_entry.runtime_data.decision.rooms[ROOM_ID].source is Source.EVENT
+
+    sources: list[Source] = []
+    step = Engine.step
+
+    def recording_step(engine: Engine, snapshot):
+        decision = step(engine, snapshot)
+        sources.append(decision.rooms[ROOM_ID].source)
+        return decision
+
+    async def network_calendar(call: ServiceCall) -> dict:
+        await asyncio.sleep(0)  # a real provider waits for I/O
+        return {CALENDAR: {"events": calendar_events}}
+
+    hass.services.async_register(
+        "calendar", "get_events", network_calendar, supports_response=SupportsResponse.ONLY
+    )
+    monkeypatch.setattr(Engine, "step", recording_step)
+    calendar_events.clear()  # the event has gone by the next successful fetch
+    hass.config_entries.async_update_entry(loaded_entry, options={CONF_MARGIN: 0.5})
+    await hass.async_block_till_done()
+    assert sources[0] is Source.EVENT
+    assert loaded_entry.runtime_data.decision.rooms[ROOM_ID].source is Source.FROST
 
 
 async def test_off_room_rejects_boost(

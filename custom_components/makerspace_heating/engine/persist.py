@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from .boiler import BoilerState
 from .engine import Engine
-from .model import Boost
+from .model import Boost, CalendarEvent
 from .stats import RoomStats, Stats
 
 _LOGGER = logging.getLogger(__name__)
@@ -47,23 +47,27 @@ def dump(engine: Engine) -> dict[str, Any]:
     }
 
 
-def restore(engine: Engine, data: Mapping[str, Any], now: datetime) -> None:
+def restore(
+    engine: Engine, data: Mapping[str, Any], now: datetime, handover: bool = False
+) -> None:
     """Load saved state into a fresh engine.
 
     Rooms that no longer exist are dropped. An unreadable section is skipped
-    and the engine keeps its defaults for it.
+    and the engine keeps its defaults for it. handover is True when the state
+    was saved moments ago by a reload rather than before a restart: a running
+    boiler then stays on, so a settings change does not short-cycle it.
     """
-    sections: tuple[Callable[[Engine, Mapping[str, Any], datetime], None], ...] = (
-        _restore_rooms,
-        _restore_boiler,
-        _restore_stats,
-        _restore_last_step,
-    )
-    for section in sections:
+    sections: dict[str, Callable[[], None]] = {
+        "rooms": lambda: _restore_rooms(engine, data, now),
+        "boiler": lambda: _restore_boiler(engine, data, now, handover),
+        "stats": lambda: _restore_stats(engine, data, now),
+        "last_step": lambda: _restore_last_step(engine, data, now),
+    }
+    for name, section in sections.items():
         try:
-            section(engine, data, now)
+            section()
         except (AttributeError, KeyError, TypeError, ValueError):
-            _LOGGER.warning("Ignoring unreadable saved state in %s", section.__name__)
+            _LOGGER.warning("Ignoring unreadable saved state in %s", name)
 
 
 def _restore_rooms(engine: Engine, data: Mapping[str, Any], now: datetime) -> None:
@@ -76,21 +80,30 @@ def _restore_rooms(engine: Engine, data: Mapping[str, Any], now: datetime) -> No
         state.boost = boost if boost is not None and boost.ends > now and state.enabled else None
 
 
-def _restore_boiler(engine: Engine, data: Mapping[str, Any], now: datetime) -> None:
+def _restore_boiler(
+    engine: Engine, data: Mapping[str, Any], now: datetime, handover: bool
+) -> None:
     item = data.get("boiler", {})
     boiler = BoilerState(
         last_on=_load_time(item.get("last_on")),
         last_off=_load_time(item.get("last_off")),
     )
     known = engine.rooms
-    if item.get("on"):
-        # The boiler is switched off at startup: rest counts from now and the
-        # valves that were open stay open for the keep-open time.
+    open_calling = frozenset(
+        room for room in item.get("last_open_calling", []) if room in known
+    )
+    if item.get("on") and handover and open_calling:
+        # Handed over by a reload: the boiler keeps running, and the valves
+        # that were open keep it company.
+        boiler.on = True
+        boiler.last_open_calling = open_calling
+    elif item.get("on"):
+        # The boiler is switched off at startup (or its open rooms have gone):
+        # rest counts from now and the valves that were open stay open for the
+        # keep-open time.
         boiler.last_off = now
         if engine.settings.keep_open > timedelta(0):
-            boiler.held_rooms = frozenset(
-                room for room in item.get("last_open_calling", []) if room in known
-            )
+            boiler.held_rooms = open_calling
             boiler.hold_until = now + engine.settings.keep_open
     else:
         hold_until = _load_time(item.get("hold_until"))
@@ -122,6 +135,44 @@ def _restore_stats(engine: Engine, data: Mapping[str, Any], now: datetime) -> No
 
 def _restore_last_step(engine: Engine, data: Mapping[str, Any], now: datetime) -> None:
     engine.last_step = _load_time(data.get("last_step"))
+
+
+def dump_events(events: Iterable[CalendarEvent]) -> list[dict[str, Any]]:
+    """Return the cached calendar events as JSON-compatible dicts."""
+    return [
+        {
+            "summary": event.summary,
+            "start": event.start.isoformat(),
+            "end": event.end.isoformat(),
+            "tags": sorted(event.tags),
+        }
+        for event in events
+    ]
+
+
+def load_events(raw: Any) -> tuple[CalendarEvent, ...]:
+    """Rebuild saved calendar events, skipping malformed items."""
+    if not isinstance(raw, list):
+        return ()
+    events: list[CalendarEvent] = []
+    for item in raw:
+        try:
+            start = datetime.fromisoformat(item["start"])
+            end = datetime.fromisoformat(item["end"])
+            tags = item.get("tags", [])
+            if start.tzinfo is None or end.tzinfo is None or not isinstance(tags, list):
+                continue
+            events.append(
+                CalendarEvent(
+                    summary=str(item["summary"]),
+                    start=start,
+                    end=end,
+                    tags=frozenset(str(tag) for tag in tags),
+                )
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+    return tuple(events)
 
 
 def _dump_time(moment: datetime | None) -> str | None:

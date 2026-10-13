@@ -9,8 +9,9 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, HUB_MODEL, NAME
+from .const import DOMAIN, HUB_MODEL, MODE_ACTIVE, NAME
 from .controller import HeatingController
+from .options import control_mode
 from .services import async_setup_services
 
 PLATFORMS = [
@@ -58,5 +59,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: MakerspaceHeatingConfig
     """Stop the platforms, then the controller (which saves state)."""
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        await entry.runtime_data.async_shutdown()
+        controller = entry.runtime_data
+        # A reload's update listener runs after the new options are applied.
+        active_after = control_mode(entry.options) == MODE_ACTIVE and entry.disabled_by is None
+        # A Shadow/Paused boiler is only simulated: an Active successor must not
+        # take it over as running (the real boiler is off, valves may be shut).
+        await controller.async_shutdown(handover=controller.active or not active_after)
     return unloaded
