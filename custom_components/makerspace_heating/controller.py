@@ -256,7 +256,12 @@ class HeatingController:
             restore(self.engine, saved, now, keep_boiler=same_devices)
             self.events = load_events(saved.get("events"))
         if handover is not None:
-            restore_handover(self.engine, handover.get("engine"), same_devices)
+            restore_handover(
+                self.engine,
+                handover.get("engine"),
+                same_devices,
+                same_sensors=self._same_sensors(handover),
+            )
             self._restore_calendar_failure(handover)
         self._adopt_alerts(handover)
         tracked = [self.boiler_entity, self.calendar_entity]
@@ -328,6 +333,9 @@ class HeatingController:
             "mode": self.mode,
             "boiler": self.boiler_entity,
             "valves": {room_id: room.valve for room_id, room in self.rooms.items()},
+            "temperatures": {
+                room_id: room.temperature for room_id, room in self.rooms.items()
+            },
             "calendar": self.calendar_entity,
             "calendar_failing_since": failing_since.isoformat() if failing_since else None,
             "raised": [
@@ -369,6 +377,17 @@ class HeatingController:
             _LOGGER.warning("Ignoring an unreadable calendar failure time in the handover")
             return
         self.calendar_failing_since = moment
+
+    def _same_sensors(self, handover: Mapping[str, Any]) -> frozenset[str]:
+        """Rooms whose temperature sensor is the one the handover was watching."""
+        sensors = handover.get("temperatures")
+        if not isinstance(sensors, Mapping):
+            return frozenset()
+        return frozenset(
+            room_id
+            for room_id, room in self.rooms.items()
+            if sensors.get(room_id) == room.temperature
+        )
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:

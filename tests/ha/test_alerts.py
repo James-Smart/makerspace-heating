@@ -11,6 +11,7 @@ from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
     async_capture_events,
@@ -23,6 +24,7 @@ from custom_components.makerspace_heating.const import (
     CONF_MARGIN,
     CONF_NOTIFY_ACTIONS,
     CONF_NOTIFY_ENTITIES,
+    CONF_TEMPERATURE,
     DOMAIN,
     EVENT_LOGBOOK_ENTRY,
     HANDOVER_KEY,
@@ -30,7 +32,7 @@ from custom_components.makerspace_heating.const import (
 )
 from custom_components.makerspace_heating.controller import HeatingController
 
-from .conftest import BOILER, ROOM_ID, TEMPERATURE
+from .conftest import BOILER, ROOM_ID, TEMPERATURE, WORKSHOP
 
 ACTIVE = {CONF_CONTROL_MODE: MODE_ACTIVE}
 
@@ -300,3 +302,28 @@ async def test_going_active_does_not_repeat_a_fault(
     await advance(hass, freezer, timedelta(minutes=10))
     assert messages(send_message, "Heating fault") == [f"Heating fault: {MESSAGE}"]
     assert ir.async_get(hass).async_get_issue(DOMAIN, ISSUE_ID) is not None
+
+
+@pytest.mark.parametrize("new_sensor", [False, True])
+async def test_warming_watch_carries_on_only_for_the_same_sensor(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    loaded_entry: MockConfigEntry,
+    new_sensor: bool,
+) -> None:
+    loaded_entry.runtime_data.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    started = dt_util.now()
+    await advance(hass, freezer, timedelta(minutes=10))
+    assert loaded_entry.runtime_data.engine.warming.tracks[ROOM_ID][0] == started
+    if new_sensor:
+        hass.states.async_set("sensor.spare_temperature", "18.0", {"unit_of_measurement": "°C"})
+        result = await loaded_entry.start_subentry_reconfigure_flow(hass, ROOM_ID)
+        await hass.config_entries.subentries.async_configure(
+            result["flow_id"], {**WORKSHOP, CONF_TEMPERATURE: "sensor.spare_temperature"}
+        )
+    else:
+        hass.config_entries.async_update_entry(loaded_entry, options={CONF_MARGIN: 0.5})
+    await hass.async_block_till_done()
+    since, _ = loaded_entry.runtime_data.engine.warming.tracks[ROOM_ID]
+    assert since == (dt_util.now() if new_sensor else started)

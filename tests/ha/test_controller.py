@@ -517,6 +517,7 @@ async def test_only_unload_hands_over_and_only_in_memory(
     assert handover["mode"] == MODE_SHADOW
     assert handover["boiler"] == BOILER
     assert handover["valves"] == {ROOM_ID: VALVE}
+    assert handover["temperatures"] == {ROOM_ID: TEMPERATURE}
     assert handover["calendar"] == CALENDAR
     assert handover["calendar_failing_since"] is None
 

@@ -236,6 +236,8 @@ def test_boost_length_survives() -> None:
     assert fresh.room_state["w"].boost.origin == "Dashboard (Sam)"
 
 
+BOTH = {"w", "m"}
+"""Rooms whose temperature sensor is unchanged."""
 TEMP = FaultKey("w", FaultKind.TEMP_UNAVAILABLE)
 BOILER_DOWN = FaultKey(HUB, FaultKind.BOILER_UNAVAILABLE)
 
@@ -258,7 +260,7 @@ def faulty_engine() -> Engine:
 def test_handover_keeps_fault_timing() -> None:
     engine = faulty_engine()
     fresh = make_engine(at(10, 6))
-    restore_handover(fresh, handed_over(engine), devices_unchanged=False)
+    restore_handover(fresh, handed_over(engine), devices_unchanged=False, same_sensors=BOTH)
 
     assert fresh.faults.started_at == at(8)
     assert fresh.faults.since == {TEMP: at(10), BOILER_DOWN: at(10)}
@@ -266,6 +268,15 @@ def test_handover_keeps_fault_timing() -> None:
     rooms = {"w": RoomInputs(None, False), "m": RoomInputs(15.0, True)}
     decision = fresh.step(Snapshot(now=at(10, 6), rooms=rooms, boiler_available=False))
     assert set(decision.faults) == {TEMP, BOILER_DOWN}  # no fresh grace or delay
+
+
+def test_handover_restarts_the_warming_watch_for_a_new_sensor() -> None:
+    engine = faulty_engine()
+    assert engine.warming.tracks == {"m": (at(10), 15.0)}
+    fresh = make_engine(at(10, 6))
+    restore_handover(fresh, handed_over(engine), devices_unchanged=True, same_sensors={"w"})
+    assert fresh.warming.tracks == {}
+    assert fresh.faults.since  # the rest still carries on
 
 
 def valves_step(engine: Engine, moment, m_valve: bool) -> None:
@@ -279,7 +290,7 @@ def test_handover_keeps_valve_tracking_only_for_unchanged_devices() -> None:
     assert engine.mismatch_since == {"m": at(10, 6)}
 
     kept = make_engine(at(10, 7))
-    restore_handover(kept, handed_over(engine), devices_unchanged=True)
+    restore_handover(kept, handed_over(engine), devices_unchanged=True, same_sensors=BOTH)
     assert kept.commanded == {"w": False, "m": True}
     assert kept.commanded_valve("m") is True
     assert kept.valve_on_since == {}
@@ -287,18 +298,18 @@ def test_handover_keeps_valve_tracking_only_for_unchanged_devices() -> None:
 
     valves_step(engine, at(10, 7), m_valve=True)
     kept = make_engine(at(10, 8))
-    restore_handover(kept, handed_over(engine), devices_unchanged=True)
+    restore_handover(kept, handed_over(engine), devices_unchanged=True, same_sensors=BOTH)
     assert kept.valve_on_since == {"m": at(10, 7)}
 
     changed = make_engine(at(10, 8))
-    restore_handover(changed, handed_over(engine), devices_unchanged=False)
+    restore_handover(changed, handed_over(engine), devices_unchanged=False, same_sensors=BOTH)
     assert (changed.commanded, changed.valve_on_since, changed.mismatch_since) == ({}, {}, {})
 
 
 def test_handover_drops_rooms_that_have_gone() -> None:
     engine = faulty_engine()
     fresh = Engine(GlobalSettings(), [MAIN], at(10, 6))
-    restore_handover(fresh, handed_over(engine), devices_unchanged=True)
+    restore_handover(fresh, handed_over(engine), devices_unchanged=True, same_sensors=BOTH)
     assert fresh.faults.since == {BOILER_DOWN: at(10)}
     assert set(fresh.commanded) == {"m"}
     assert set(fresh.valve_on_since) == {"m"}
@@ -330,7 +341,7 @@ def restored_sections(engine: Engine) -> dict[str, bool]:
 )
 def test_unreadable_handover_leaves_defaults(bad: object) -> None:
     fresh = make_engine(at(10, 6))
-    restore_handover(fresh, bad, devices_unchanged=True)
+    restore_handover(fresh, bad, devices_unchanged=True, same_sensors=BOTH)
     assert restored_sections(fresh) == {"faults": False, "warming": False, "valves": False}
 
 
@@ -350,10 +361,10 @@ def test_one_unreadable_handover_section_is_skipped(change: dict, section: str) 
     valves_step(engine, at(10, 5, 30), m_valve=True)
     good = handed_over(engine)
     fresh = make_engine(at(10, 6))
-    restore_handover(fresh, good, devices_unchanged=True)
+    restore_handover(fresh, good, devices_unchanged=True, same_sensors=BOTH)
     assert restored_sections(fresh) == {"faults": True, "warming": True, "valves": True}
 
     fresh = make_engine(at(10, 6))
-    restore_handover(fresh, good | change, devices_unchanged=True)
+    restore_handover(fresh, good | change, devices_unchanged=True, same_sensors=BOTH)
     restored = restored_sections(fresh)
     assert restored == {name: name != section for name in restored}

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -164,20 +164,24 @@ def dump_handover(engine: Engine) -> dict[str, Any]:
     }
 
 
-def restore_handover(engine: Engine, data: Any, devices_unchanged: bool) -> None:
+def restore_handover(
+    engine: Engine, data: Any, devices_unchanged: bool, *, same_sensors: Collection[str]
+) -> None:
     """Load what a reload handed over into a fresh engine.
 
     Fault timing carries on, so a raised fault stays raised and a pending
-    one keeps its delay. Valve tracking (commands, open and mismatch times)
-    only carries on when the devices and mode are unchanged. Rooms that no
-    longer exist are dropped; an unreadable section keeps its defaults.
+    one keeps its delay. The not-warming watch carries on for the rooms in
+    same_sensors (temperature sensor unchanged). Valve tracking (commands,
+    open and mismatch times) only carries on when the devices and mode are
+    unchanged. Rooms that no longer exist are dropped; an unreadable section
+    keeps its defaults.
     """
     if not isinstance(data, Mapping):
         _LOGGER.warning("Ignoring unreadable handover state")
         return
     sections: dict[str, Callable[[], None]] = {
         "faults": lambda: _restore_faults(engine, data),
-        "warming": lambda: _restore_warming(engine, data),
+        "warming": lambda: _restore_warming(engine, data, same_sensors),
     }
     if devices_unchanged:
         sections["valves"] = lambda: _restore_valves(engine, data)
@@ -199,11 +203,13 @@ def _restore_faults(engine: Engine, data: Mapping[str, Any]) -> None:
     engine.faults.since = since
 
 
-def _restore_warming(engine: Engine, data: Mapping[str, Any]) -> None:
+def _restore_warming(
+    engine: Engine, data: Mapping[str, Any], same_sensors: Collection[str]
+) -> None:
     engine.warming.tracks = {
         room_id: (_load_moment(item["since"]), float(item["temperature"]))
         for room_id, item in data["warming"].items()
-        if room_id in engine.rooms
+        if room_id in engine.rooms and room_id in same_sensors
     }
 
 
