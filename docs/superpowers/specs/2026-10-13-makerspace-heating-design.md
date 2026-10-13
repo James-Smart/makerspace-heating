@@ -37,8 +37,9 @@ all heating decisions.
   - optionally, a momentary "demand heat" push button wired to a Shelly input.
     The main event space has no button yet.
 - **Boiler.** One Shelly relay gives the boiler an on/off call for heat.
-- **Home Assistant.** Version 2025.6 or newer; integration installed from a GitHub
-  repository via HACS. Shellys are connected through the official Shelly integration.
+- **Home Assistant.** Always the latest stable release (2026.10 at the time of writing);
+  older versions are not supported. The integration is installed from a GitHub repository
+  via HACS. Shellys are connected through the official Shelly integration.
 
 ## 3. Room behaviour
 
