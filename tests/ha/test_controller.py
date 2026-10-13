@@ -218,6 +218,80 @@ async def test_calendar_failure_is_recorded(
     assert controller.calendar_failing_since is not None
 
 
+def fail_calendar(hass: HomeAssistant) -> None:
+    """Make calendar.get_events raise a provider error HA passes straight through."""
+
+    async def broken(call: ServiceCall) -> dict:
+        raise RuntimeError("CalDAV server said no")
+
+    hass.services.async_register(
+        "calendar", "get_events", broken, supports_response=SupportsResponse.ONLY
+    )
+
+
+async def test_hung_calendar_times_out(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, controller: HeatingController
+) -> None:
+    async def hang(call: ServiceCall) -> dict:
+        await asyncio.Event().wait()
+        return {}
+
+    hass.services.async_register(
+        "calendar", "get_events", hang, supports_response=SupportsResponse.ONLY
+    )
+    fetch = hass.async_create_task(controller.async_refresh_calendar())
+    await asyncio.sleep(0)
+    assert controller._fetching
+    freezer.tick(timedelta(seconds=61))
+    async_fire_time_changed(hass)
+    await fetch
+    assert controller.calendar_failing_since is not None
+    assert not controller._fetching
+
+
+async def test_unexpected_calendar_error_is_a_failure(
+    hass: HomeAssistant, controller: HeatingController, caplog: pytest.LogCaptureFixture
+) -> None:
+    fail_calendar(hass)
+    await controller.async_refresh_calendar()
+    assert controller.calendar_failing_since is not None
+    assert not controller._fetching
+    assert "CalDAV server said no" in caplog.text
+
+
+async def test_failed_fetch_keeps_last_events(
+    hass: HomeAssistant, controller: HeatingController, calendar_events: list[dict]
+) -> None:
+    now = dt_util.now()
+    calendar_events.append(
+        {
+            "start": (now - timedelta(minutes=5)).isoformat(),
+            "end": (now + timedelta(hours=1)).isoformat(),
+            "summary": "Pottery night #workshop",
+        }
+    )
+    await controller.async_refresh_calendar()
+    assert controller.decision.rooms[ROOM_ID].source is Source.EVENT
+    fail_calendar(hass)
+    await controller.async_refresh_calendar()
+    assert controller.calendar_failing_since is not None
+    assert controller.decision.rooms[ROOM_ID].source is Source.EVENT
+
+
+async def test_calendar_failing_for_30_minutes_raises_fault(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry
+) -> None:
+    problem = "binary_sensor.makerspace_heating_heating_problem"
+    fail_calendar(hass)
+    await advance(hass, freezer, timedelta(minutes=5))
+    assert loaded_entry.runtime_data.calendar_failing_since is not None
+    for _ in range(5):
+        await advance(hass, freezer, timedelta(minutes=5))
+    assert hass.states.get(problem).state == "off"
+    await advance(hass, freezer, timedelta(minutes=5))
+    assert hass.states.get(problem).state == "on"
+
+
 async def test_boost_survives_restart(
     hass: HomeAssistant, entry, devices, calendar_calls
 ) -> None:

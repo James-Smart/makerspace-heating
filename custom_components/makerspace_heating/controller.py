@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from collections.abc import Callable
@@ -35,6 +36,7 @@ from homeassistant.util.unit_conversion import TemperatureConverter
 from .const import (
     BUTTON_DEBOUNCE,
     CALENDAR_REFRESH,
+    CALENDAR_TIMEOUT,
     CALENDAR_WINDOW,
     CONF_BOILER,
     CONF_CALENDAR,
@@ -54,6 +56,7 @@ from .engine.model import CalendarEvent, FaultKey, RoomInputs, Snapshot
 from .engine.persist import STORE_VERSION, dump, restore
 from .engine.schedule import UpcomingEvent, parse_events
 from .engine.schedule import upcoming as list_upcoming
+from .engine.timefmt import format_duration
 from .options import RoomConfig, control_mode, global_settings, notify_targets, room_config
 
 if TYPE_CHECKING:
@@ -62,6 +65,9 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 _PREFIXES = {MODE_SHADOW: "Shadow: ", MODE_PAUSED: "Paused: "}
+
+_EXPECTED_CALENDAR_ERRORS = (HomeAssistantError, probatio.Invalid, KeyError, TypeError)
+"""Calendar fetch errors that are logged without a traceback."""
 
 
 def read_temperature(state: State | None) -> float | None:
@@ -285,25 +291,38 @@ class HeatingController:
         self._fetching = True
         now = dt_util.now()
         try:
-            response = await self.hass.services.async_call(
-                "calendar",
-                "get_events",
-                {
-                    ATTR_ENTITY_ID: self.calendar_entity,
-                    "start_date_time": now,
-                    "end_date_time": now + CALENDAR_WINDOW,
-                },
-                blocking=True,
-                return_response=True,
-            )
+            async with asyncio.timeout(CALENDAR_TIMEOUT.total_seconds()):
+                response = await self.hass.services.async_call(
+                    "calendar",
+                    "get_events",
+                    {
+                        ATTR_ENTITY_ID: self.calendar_entity,
+                        "start_date_time": now,
+                        "end_date_time": now + CALENDAR_WINDOW,
+                    },
+                    blocking=True,
+                    return_response=True,
+                )
             raw = response[self.calendar_entity]["events"]  # type: ignore[index]
             events = parse_events(raw, dt_util.get_default_time_zone())
-        except (HomeAssistantError, probatio.Invalid, KeyError, TypeError) as err:
+        except Exception as err:  # noqa: BLE001 - providers' errors pass straight through
             if self._closed:
                 return
             if self.calendar_failing_since is None:
                 self.calendar_failing_since = now
-            _LOGGER.warning("Could not read calendar %s: %s", self.calendar_entity, err)
+            if isinstance(err, TimeoutError):
+                _LOGGER.warning(
+                    "Could not read calendar %s: no answer within %s",
+                    self.calendar_entity,
+                    format_duration(CALENDAR_TIMEOUT),
+                )
+            else:
+                _LOGGER.warning(
+                    "Could not read calendar %s: %s",
+                    self.calendar_entity,
+                    err,
+                    exc_info=not isinstance(err, _EXPECTED_CALENDAR_ERRORS),
+                )
         else:
             if self._closed:
                 return

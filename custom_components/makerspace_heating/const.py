@@ -77,6 +77,7 @@ ROOM_DEFAULTS: Final[dict[str, Any]] = {
 TICK_INTERVAL: Final = timedelta(seconds=30)
 CALENDAR_REFRESH: Final = timedelta(minutes=5)
 CALENDAR_WINDOW: Final = timedelta(hours=24)
+CALENDAR_TIMEOUT: Final = timedelta(seconds=60)
 BUTTON_DEBOUNCE: Final = timedelta(seconds=2)
 RESEND_INTERVAL: Final = timedelta(seconds=30)
 SAVE_DELAY: Final = 10  # seconds
