@@ -45,15 +45,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: MakerspaceHeatingConfigE
         manufacturer=NAME,
         model=HUB_MODEL,
     )
-    controller = HeatingController(hass, entry)
-    entry.runtime_data = controller
+    controller: HeatingController | None = None
     try:
+        controller = entry.runtime_data = HeatingController(hass, entry)
         await controller.async_setup()
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except Exception:
         # Without this the controller would keep running (and switching)
         # unowned, or leave a boiler it took over firing with nothing in control.
-        await controller.async_shutdown(release_boiler=controller.active, handover=False)
+        if controller is not None:
+            await controller.async_shutdown(release_boiler=controller.active, handover=False)
+        else:
+            hass.data.get(HANDOVER_KEY, {}).pop(entry.entry_id, None)
+            boiler = entry.data.get(CONF_BOILER)
+            if control_mode(entry.options) == MODE_ACTIVE and boiler:
+                await async_turn_off_boiler(hass, boiler)
         raise
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True

@@ -1107,3 +1107,32 @@ async def test_release_cancels_a_command_that_never_finishes(
         command.cancel()  # never leave it for teardown to wait on
     await hass.async_block_till_done()
     assert hass.states.get(BOILER).state == "off"
+
+
+@pytest.mark.parametrize(
+    ("entry_options", "boiler_after"), [(ACTIVE, "off"), ({CONF_CONTROL_MODE: MODE_SHADOW}, "on")]
+)
+async def test_a_controller_that_cannot_be_built_releases_the_boiler(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    loaded_entry: MockConfigEntry,
+    entry_options: dict,
+    boiler_after: str,
+) -> None:
+    if loaded_entry.runtime_data.active:
+        await boiler_running(hass, freezer, loaded_entry)
+    else:  # Shadow never switches: whatever runs the boiler is left alone
+        await hass.services.async_call(
+            "input_boolean", "turn_on", {"entity_id": BOILER}, blocking=True
+        )
+    with patch(
+        "custom_components.makerspace_heating.HeatingController",
+        side_effect=ValueError("odd room data"),
+    ):
+        hass.config_entries.async_update_entry(
+            loaded_entry, options=entry_options | {CONF_MARGIN: 0.5}
+        )
+        await hass.async_block_till_done()
+    assert loaded_entry.state is ConfigEntryState.SETUP_ERROR
+    assert hass.states.get(BOILER).state == boiler_after
+    assert loaded_entry.entry_id not in hass.data.get(HANDOVER_KEY, {})
