@@ -16,9 +16,10 @@ Design: `docs/superpowers/specs/2026-10-13-makerspace-heating-design.md`.
   reported open for the *wait for valves* time. It keeps at least one valve open
   while running and for a few minutes after stopping. Minimum run and rest times
   stop it short-cycling. A running boiler carries on through settings changes
-  and room edits, except a change to the boiler switch or a room's valve switch:
-  then it rests once before firing again. A Home Assistant restart while the
-  boiler is on also gives it one minimum-rest period.
+  and room edits, except a change to the boiler switch or a room's valve switch,
+  or removing the room whose valve was the only one open: then it rests once
+  before firing again. A Home Assistant restart while the boiler is on also
+  gives it one minimum-rest period.
 - **Faults**, such as a dead sensor, an unresponsive valve, an unreadable
   calendar or a room heating without warming, appear under Settings → Repairs.
   They can also be sent to your phone or chat.
