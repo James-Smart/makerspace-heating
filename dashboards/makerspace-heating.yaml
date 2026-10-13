@@ -46,7 +46,7 @@ views:
               columns: full
           - type: tile
             entity: button.workshop_boost
-            name: Boost 30 min
+            name: Boost
             tap_action:
               action: perform-action
               perform_action: button.press

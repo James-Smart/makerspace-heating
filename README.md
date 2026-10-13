@@ -14,10 +14,11 @@ Design: `docs/superpowers/specs/2026-10-13-makerspace-heating-design.md`.
   - **Frost**: always on, so rooms never drop below the frost target.
 - **The boiler** runs only while a room calls for heat and its valve has
   reported open for the *wait for valves* time. It keeps at least one valve open
-  while running and for a few minutes after stopping. Its minimum run and rest
-  times hold within a run and across settings and room changes, so it does not
-  short-cycle. A Home Assistant restart while the boiler is on gives it one
-  minimum-rest period.
+  while running and for a few minutes after stopping. Minimum run and rest times
+  stop it short-cycling. A running boiler carries on through settings changes
+  and room edits, except a change to the boiler switch or a room's valve switch:
+  then it rests once before firing again. A Home Assistant restart while the
+  boiler is on also gives it one minimum-rest period.
 - **Faults**, such as a dead sensor, an unresponsive valve, an unreadable
   calendar or a room heating without warming, appear under Settings → Repairs.
   They can also be sent to your phone or chat.
@@ -61,7 +62,8 @@ statuses, stats and alerts, but switches nothing.
 
 Shadow and Paused never switch any device. Leaving Active (choosing Shadow or
 Paused, or disabling or deleting the integration) turns the boiler off but leaves
-the valves as they are.
+the valves as they are. So does choosing a different boiler switch while Active,
+for the old one.
 
 ## Dashboard
 
