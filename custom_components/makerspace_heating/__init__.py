@@ -47,7 +47,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MakerspaceHeatingConfigE
     controller = HeatingController(hass, entry)
     await controller.async_setup()
     entry.runtime_data = controller
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        # Without this the controller would keep running (and switching) unowned.
+        await controller.async_shutdown()
+        raise
     entry.async_on_unload(entry.add_update_listener(_async_reload))
     return True
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import timedelta
+from unittest.mock import patch
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
@@ -458,6 +459,21 @@ async def test_failed_boiler_release_does_not_stop_reload(
     assert loaded_entry.state is ConfigEntryState.LOADED
     assert loaded_entry.runtime_data.status_prefix() == "Paused: "
     assert "Could not turn off the boiler input_boolean.boiler: Shelly did not answer" in caplog.text
+
+
+async def test_failed_platform_setup_stops_controller(
+    hass: HomeAssistant, entry: MockConfigEntry, devices, calendar_calls
+) -> None:
+    with patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        side_effect=RuntimeError("platform broke"),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert entry.runtime_data._closed
+    assert not entry.runtime_data._unsubscribe
 
 
 async def test_only_unload_marks_a_handover(
