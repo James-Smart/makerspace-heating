@@ -70,6 +70,9 @@ _PREFIXES = {MODE_SHADOW: "Shadow: ", MODE_PAUSED: "Paused: "}
 _EXPECTED_CALENDAR_ERRORS = (HomeAssistantError, probatio.Invalid, KeyError, TypeError)
 """Calendar fetch errors that are logged without a traceback."""
 
+RELEASE_MESSAGE = "turned off: Makerspace Heating is no longer in control"
+"""Logbook message (after 'Boiler') when leaving Active turns the boiler off."""
+
 _HANDOVER_AT = "handover_at"
 """Saved-state key: when an unload or reload saved it (absent after a restart)."""
 
@@ -134,6 +137,25 @@ async def describe_origin(hass: HomeAssistant, context: Context | None) -> str:
             return f"Dashboard ({user.name})"
         return "Dashboard"
     return "Automation/script"
+
+
+async def async_turn_off_boiler(hass: HomeAssistant, entity_id: str) -> None:
+    """Turn the boiler off as the integration stops being in control.
+
+    Valves are left as they are: an open valve is safe.
+    """
+    domain = entity_id.split(".", 1)[0]
+    try:
+        await hass.services.async_call(
+            domain, SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}, blocking=True
+        )
+    except Exception as err:  # noqa: BLE001 - unloading must carry on whatever happens
+        _LOGGER.warning("Could not turn off the boiler %s: %s", entity_id, err)
+        return
+    hass.bus.async_fire(
+        EVENT_LOGBOOK_ENTRY,
+        {"name": "Boiler", "message": RELEASE_MESSAGE, "domain": DOMAIN},
+    )
 
 
 class HeatingController:
@@ -209,9 +231,14 @@ class HeatingController:
         ]
         self.async_step()
 
-    async def async_shutdown(self, *, handover: bool = True) -> None:
+    async def async_shutdown(
+        self, *, release_boiler: bool = False, handover: bool = True
+    ) -> None:
         """Stop listening and save state (on unload or reload only). Safe to call twice.
 
+        release_boiler turns the boiler off, for an Active controller that is
+        not followed by an Active one. It happens once nothing is listening:
+        while listening, the change would look manual and be switched back on.
         With handover the saved state is marked so that a controller set up
         straight after (a reload) carries on with a running boiler.
         """
@@ -219,6 +246,11 @@ class HeatingController:
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe.clear()
+        if release_boiler:
+            await async_turn_off_boiler(self.hass, self.boiler_entity)
+            if self.engine.boiler.on:
+                self.engine.boiler.on = False
+                self.engine.boiler.last_off = dt_util.now()
         for key in self._raised:
             ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
         self._raised.clear()

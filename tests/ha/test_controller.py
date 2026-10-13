@@ -7,9 +7,10 @@ from datetime import timedelta
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
+from homeassistant.config_entries import ConfigEntryDisabler, ConfigEntryState
 from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import HomeAssistant, ServiceCall, State, SupportsResponse
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -23,6 +24,8 @@ from custom_components.makerspace_heating.const import (
     DOMAIN,
     EVENT_LOGBOOK_ENTRY,
     MODE_ACTIVE,
+    MODE_PAUSED,
+    MODE_SHADOW,
 )
 from custom_components.makerspace_heating.controller import (
     HeatingController,
@@ -360,6 +363,101 @@ async def test_settings_change_does_not_short_cycle_boiler(
         if event.data["entity_id"] in (BOILER, VALVE)
         and event.data["new_state"].state != "on"
     ]
+
+
+def released(logbook: list) -> bool:
+    return any(
+        event.data["name"] == "Boiler"
+        and event.data["message"] == "turned off: Makerspace Heating is no longer in control"
+        for event in logbook
+    )
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+@pytest.mark.parametrize("mode", [MODE_PAUSED, MODE_SHADOW])
+async def test_leaving_active_turns_boiler_off(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    loaded_entry: MockConfigEntry,
+    mode: str,
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    hass.config_entries.async_update_entry(loaded_entry, options={CONF_CONTROL_MODE: mode})
+    await hass.async_block_till_done()
+    assert hass.states.get(BOILER).state == "off"
+    assert hass.states.get(VALVE).state == "on"  # valves are left as they are
+    assert released(logbook)
+    assert not loaded_entry.runtime_data.engine.boiler.on
+    await advance(hass, freezer, timedelta(hours=1))
+    assert hass.states.get(BOILER).state == "off"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_disabling_turns_boiler_off(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    await hass.config_entries.async_set_disabled_by(
+        loaded_entry.entry_id, ConfigEntryDisabler.USER
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(BOILER).state == "off"
+    assert hass.states.get(VALVE).state == "on"
+    assert released(logbook)
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_removing_turns_boiler_off_and_deletes_state(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    loaded_entry: MockConfigEntry,
+    hass_storage: dict,
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    await hass.config_entries.async_remove(loaded_entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(BOILER).state == "off"
+    assert hass.states.get(VALVE).state == "on"
+    assert released(logbook)
+    assert f"{DOMAIN}.{loaded_entry.entry_id}" not in hass_storage
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_removing_a_disabled_entry_leaves_boiler_alone(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry
+) -> None:
+    await hass.config_entries.async_set_disabled_by(
+        loaded_entry.entry_id, ConfigEntryDisabler.USER
+    )
+    await hass.services.async_call(  # e.g. the old automations are back in charge
+        "input_boolean", "turn_on", {"entity_id": BOILER}, blocking=True
+    )
+    await hass.config_entries.async_remove(loaded_entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.states.get(BOILER).state == "on"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_failed_boiler_release_does_not_stop_reload(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    loaded_entry: MockConfigEntry,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+
+    async def broken(call: ServiceCall) -> None:
+        raise HomeAssistantError("Shelly did not answer")
+
+    hass.services.async_register("input_boolean", "turn_off", broken)
+    hass.config_entries.async_update_entry(loaded_entry, options={CONF_CONTROL_MODE: MODE_PAUSED})
+    await hass.async_block_till_done()
+    assert loaded_entry.state is ConfigEntryState.LOADED
+    assert loaded_entry.runtime_data.status_prefix() == "Paused: "
+    assert "Could not turn off the boiler input_boolean.boiler: Shelly did not answer" in caplog.text
 
 
 async def test_only_unload_marks_a_handover(
