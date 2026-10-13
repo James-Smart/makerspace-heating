@@ -22,6 +22,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import Context, Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import (
     async_track_state_change_event,
     async_track_time_interval,
@@ -42,17 +43,18 @@ from .const import (
     MODE_ACTIVE,
     MODE_PAUSED,
     MODE_SHADOW,
+    NAME,
     RESEND_INTERVAL,
     SAVE_DELAY,
     SUBENTRY_ROOM,
     TICK_INTERVAL,
 )
 from .engine.engine import BoostError, Decision, Engine
-from .engine.model import CalendarEvent, RoomInputs, Snapshot
+from .engine.model import CalendarEvent, FaultKey, RoomInputs, Snapshot
 from .engine.persist import STORE_VERSION, dump, restore
 from .engine.schedule import UpcomingEvent, parse_events
 from .engine.schedule import upcoming as list_upcoming
-from .options import RoomConfig, control_mode, global_settings, room_config
+from .options import RoomConfig, control_mode, global_settings, notify_targets, room_config
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
@@ -156,6 +158,8 @@ class HeatingController:
         self._fetching = False
         self._seen_unknown_tags: set[str] = set()
         self._closed = False
+        self.notify_entities, self.notify_actions = notify_targets(entry.options)
+        self._raised: dict[FaultKey, str] = {}
 
     @property
     def active(self) -> bool:
@@ -191,6 +195,9 @@ class HeatingController:
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe.clear()
+        for key in self._raised:
+            ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
+        self._raised.clear()
         await self._store.async_save(dump(self.engine))
 
     @callback
@@ -258,6 +265,7 @@ class HeatingController:
             self._apply(decision, now)
         for line in decision.log:
             self._log_entry(line.name, line.message)
+        self._update_alerts(decision.faults)
         self._store.async_delay_save(lambda: dump(self.engine), SAVE_DELAY)
         for listener in list(self._listeners):
             listener()
@@ -366,6 +374,46 @@ class HeatingController:
             f"was switched {'on' if after else 'off'} by hand; "
             f"switching it back {'on' if desired else 'off'}",
         )
+
+    @callback
+    def _update_alerts(self, raised: dict[FaultKey, str]) -> None:
+        """Create and remove Repairs issues and send notifications on changes."""
+        for key, message in raised.items():
+            if key in self._raised:
+                continue
+            self._raised[key] = message
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                self._issue_id(key),
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="fault",
+                translation_placeholders={"message": message},
+            )
+            self._log_entry(NAME, f"fault: {message}")
+            self._notify(f"Heating fault: {message}")
+        for key in [key for key in self._raised if key not in raised]:
+            message = self._raised.pop(key)
+            ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
+            self._log_entry(NAME, f"fault cleared: {message}")
+            self._notify(f"Heating fault cleared: {message}")
+
+    @staticmethod
+    def _issue_id(key: FaultKey) -> str:
+        return f"{key.scope}_{key.kind}"
+
+    @callback
+    def _notify(self, message: str) -> None:
+        for entity_id in self.notify_entities:
+            self._call_task(
+                "notify",
+                "send_message",
+                {ATTR_ENTITY_ID: entity_id, "message": message, "title": NAME},
+            )
+        for action in self.notify_actions:
+            domain, _, service = action.partition(".")
+            self._call_task(domain, service, {"message": message, "title": NAME})
 
     @callback
     def _warn_unknown_tags(self, now: datetime) -> None:
