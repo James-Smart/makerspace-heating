@@ -226,6 +226,7 @@ class HeatingController:
         self._commands: set[asyncio.Task[None]] = set()
         self._save_pending = False
         self._fetching = False
+        self._fetch_again = False
         self._seen_unknown_tags: set[str] = set()
         self._closed = False
         self.notify_entities, self.notify_actions = notify_targets(entry.options)
@@ -425,10 +426,27 @@ class HeatingController:
             listener()
 
     async def async_refresh_calendar(self) -> None:
-        """Fetch the next 24 hours of events from the calendar."""
-        if self._fetching or self._closed:
+        """Fetch the next 24 hours of events from the calendar.
+
+        Asking while a fetch is running fetches once more when it finishes,
+        so a calendar change made mid-fetch is not missed.
+        """
+        if self._closed:
+            return
+        if self._fetching:
+            self._fetch_again = True
             return
         self._fetching = True
+        try:
+            while True:
+                self._fetch_again = False
+                await self._async_fetch_calendar()
+                if not self._fetch_again or self._closed:
+                    break
+        finally:
+            self._fetching = False
+
+    async def _async_fetch_calendar(self) -> None:
         now = dt_util.now()
         try:
             async with asyncio.timeout(CALENDAR_TIMEOUT.total_seconds()):
@@ -469,8 +487,6 @@ class HeatingController:
             self.calendar_failing_since = None
             self.events = tuple(events)
             self._warn_unknown_tags(now)
-        finally:
-            self._fetching = False
         self.async_step()
 
     @callback

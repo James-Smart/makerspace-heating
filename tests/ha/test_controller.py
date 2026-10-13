@@ -933,3 +933,41 @@ async def test_odd_handover_does_not_stop_setup(
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data._raised == {}
+
+
+async def test_calendar_change_during_a_fetch_fetches_again(
+    hass: HomeAssistant, controller: HeatingController, calendar_events: list[dict]
+) -> None:
+    gate = asyncio.Event()
+    calls: list[ServiceCall] = []
+
+    async def slow(call: ServiceCall) -> dict:
+        calls.append(call)
+        events = list(calendar_events)  # what the calendar held when asked
+        if len(calls) == 1:
+            await gate.wait()
+        return {CALENDAR: {"events": events}}
+
+    hass.services.async_register(
+        "calendar", "get_events", slow, supports_response=SupportsResponse.ONLY
+    )
+    fetch = hass.async_create_task(controller.async_refresh_calendar())
+    await asyncio.sleep(0)
+    assert controller._fetching
+    now = dt_util.now()
+    calendar_events.append(
+        {
+            "start": (now - timedelta(minutes=5)).isoformat(),
+            "end": (now + timedelta(hours=1)).isoformat(),
+            "summary": "Pottery night #workshop",
+        }
+    )
+    hass.states.async_set(CALENDAR, "on")  # the change arrives mid-fetch
+    hass.states.async_set(CALENDAR, "on", {"message": "Pottery night"})
+    await asyncio.sleep(0)
+    gate.set()
+    await fetch
+    await hass.async_block_till_done()
+    assert len(calls) == 2  # one more fetch for any number of changes
+    assert controller.decision.rooms[ROOM_ID].source is Source.EVENT
+    assert not controller._fetching
