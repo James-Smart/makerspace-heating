@@ -48,18 +48,19 @@ def dump(engine: Engine) -> dict[str, Any]:
 
 
 def restore(
-    engine: Engine, data: Mapping[str, Any], now: datetime, handover: bool = False
+    engine: Engine, data: Mapping[str, Any], now: datetime, keep_boiler: bool = False
 ) -> None:
     """Load saved state into a fresh engine.
 
     Rooms that no longer exist are dropped. An unreadable section is skipped
-    and the engine keeps its defaults for it. handover is True when the state
-    was saved moments ago by a reload rather than before a restart: a running
-    boiler then stays on, so a settings change does not short-cycle it.
+    and the engine keeps its defaults for it. keep_boiler is True when the
+    state was handed over moments ago by a reload that switches the same
+    devices in the same mode: a running boiler then stays on, so a settings
+    change does not short-cycle it.
     """
     sections: dict[str, Callable[[], None]] = {
         "rooms": lambda: _restore_rooms(engine, data, now),
-        "boiler": lambda: _restore_boiler(engine, data, now, handover),
+        "boiler": lambda: _restore_boiler(engine, data, now, keep_boiler),
         "stats": lambda: _restore_stats(engine, data, now),
         "last_step": lambda: _restore_last_step(engine, data, now),
     }
@@ -81,7 +82,7 @@ def _restore_rooms(engine: Engine, data: Mapping[str, Any], now: datetime) -> No
 
 
 def _restore_boiler(
-    engine: Engine, data: Mapping[str, Any], now: datetime, handover: bool
+    engine: Engine, data: Mapping[str, Any], now: datetime, keep_boiler: bool
 ) -> None:
     item = data.get("boiler", {})
     boiler = BoilerState(
@@ -92,7 +93,7 @@ def _restore_boiler(
     open_calling = frozenset(
         room for room in item.get("last_open_calling", []) if room in known
     )
-    if item.get("on") and handover and open_calling:
+    if item.get("on") and keep_boiler and open_calling:
         # Handed over by a reload: the boiler keeps running, and the valves
         # that were open keep it company.
         boiler.on = True

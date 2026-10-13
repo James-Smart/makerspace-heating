@@ -29,8 +29,10 @@ from custom_components.makerspace_heating.const import (
 from custom_components.makerspace_heating.controller import HeatingController
 
 BOILER = "input_boolean.boiler"
+NEW_BOILER = "input_boolean.new_boiler"
 CALENDAR = "calendar.events"
 VALVE = "input_boolean.workshop_valve"
+SPARE_VALVE = "input_boolean.spare_valve"
 TEMPERATURE = "sensor.workshop_temperature"
 BUTTON = "event.workshop_button"
 ROOM_ID = "01WORKSHOPROOM"
@@ -83,11 +85,18 @@ def entry(hass: HomeAssistant, entry_options: dict[str, Any]) -> MockConfigEntry
 
 @pytest.fixture
 async def devices(hass: HomeAssistant) -> None:
-    """Fake boiler, valve, temperature sensor, button and calendar."""
+    """Fake boiler, valve, temperature sensor, button and calendar (plus spare switches)."""
     assert await async_setup_component(
         hass,
         "input_boolean",
-        {"input_boolean": {"boiler": {"name": "Boiler"}, "workshop_valve": {"name": "Valve"}}},
+        {
+            "input_boolean": {
+                "boiler": {"name": "Boiler"},
+                "new_boiler": {"name": "New boiler"},
+                "workshop_valve": {"name": "Valve"},
+                "spare_valve": {"name": "Spare valve"},
+            }
+        },
     )
     hass.states.async_set(CALENDAR, "off")
     hass.states.async_set(TEMPERATURE, "18.0", {"unit_of_measurement": "°C"})

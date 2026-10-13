@@ -59,7 +59,7 @@ def test_round_trip_while_boiler_was_on() -> None:
     assert fresh.last_step == engine.last_step
 
 
-def test_handover_keeps_a_running_boiler_on() -> None:
+def test_keep_boiler_keeps_a_running_boiler_on() -> None:
     engine = make_engine()
     engine.press("w", at(10))
     engine.step(snap(at(10), valve=True))
@@ -67,7 +67,7 @@ def test_handover_keeps_a_running_boiler_on() -> None:
     assert engine.boiler.on
 
     fresh = make_engine(at(10, 4))
-    restore(fresh, saved(engine), at(10, 4), handover=True)
+    restore(fresh, saved(engine), at(10, 4), keep_boiler=True)
 
     assert fresh.boiler.on is True
     assert fresh.boiler.last_on == at(10, 3)
@@ -79,24 +79,24 @@ def test_handover_keeps_a_running_boiler_on() -> None:
     assert fresh.stats.boiler_starts == 1
 
 
-def test_handover_stops_a_boiler_whose_open_rooms_have_gone() -> None:
+def test_keep_boiler_stops_a_boiler_whose_open_rooms_have_gone() -> None:
     engine = make_engine()
     engine.press("w", at(10))
     engine.step(snap(at(10), valve=True))
     engine.step(snap(at(10, 3), valve=True))
     fresh = Engine(GlobalSettings(), [MAIN], at(10, 4))
-    restore(fresh, saved(engine), at(10, 4), handover=True)
+    restore(fresh, saved(engine), at(10, 4), keep_boiler=True)
     assert fresh.boiler.on is False
     assert fresh.boiler.last_off == at(10, 4)
 
 
-def test_handover_keeps_held_valves_of_a_stopped_boiler() -> None:
+def test_keep_boiler_keeps_held_valves_of_a_stopped_boiler() -> None:
     engine = make_engine()
     engine.boiler.last_off = at(9, 59)
     engine.boiler.held_rooms = frozenset({"w"})
     engine.boiler.hold_until = at(10, 2)
     fresh = make_engine(at(10))
-    restore(fresh, saved(engine), at(10), handover=True)
+    restore(fresh, saved(engine), at(10), keep_boiler=True)
     assert fresh.boiler.on is False
     assert fresh.boiler.last_off == at(9, 59)
     assert fresh.boiler.held_rooms == {"w"}

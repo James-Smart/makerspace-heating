@@ -20,8 +20,12 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from custom_components.makerspace_heating.const import (
+    CONF_BOILER,
+    CONF_CALENDAR,
     CONF_CONTROL_MODE,
     CONF_MARGIN,
+    CONF_MIN_REST,
+    CONF_VALVE,
     DOMAIN,
     EVENT_LOGBOOK_ENTRY,
     MODE_ACTIVE,
@@ -30,14 +34,23 @@ from custom_components.makerspace_heating.const import (
 )
 from custom_components.makerspace_heating.controller import (
     HeatingController,
-    _is_handover,
+    _fresh_handover,
     is_press,
     read_temperature,
 )
 from custom_components.makerspace_heating.engine.engine import Engine
 from custom_components.makerspace_heating.engine.model import Source
 
-from .conftest import BOILER, BUTTON, CALENDAR, ROOM_ID, VALVE
+from .conftest import (
+    BOILER,
+    BUTTON,
+    CALENDAR,
+    NEW_BOILER,
+    ROOM_ID,
+    SPARE_VALVE,
+    VALVE,
+    WORKSHOP,
+)
 
 ACTIVE = {CONF_CONTROL_MODE: MODE_ACTIVE}
 
@@ -484,20 +497,185 @@ async def test_only_unload_marks_a_handover(
 ) -> None:
     key = f"{DOMAIN}.{controller.entry.entry_id}"
     await advance(hass, freezer, timedelta(seconds=11))
-    assert "handover_at" not in hass_storage[key]["data"]
+    assert "handover" not in hass_storage[key]["data"]
     assert hass_storage[key]["data"]["events"] == []
     await controller.async_shutdown()
-    assert "handover_at" in hass_storage[key]["data"]
+    handover = hass_storage[key]["data"]["handover"]
+    assert handover["at"] == dt_util.now().isoformat()
+    assert handover["mode"] == MODE_SHADOW
+    assert handover["boiler"] == BOILER
+    assert handover["valves"] == {ROOM_ID: VALVE}
 
 
-def test_is_handover() -> None:
+async def test_shutdown_without_handover_leaves_no_mark(
+    hass: HomeAssistant, controller: HeatingController, hass_storage: dict
+) -> None:
+    await controller.async_shutdown(handover=False)
+    assert "handover" not in hass_storage[f"{DOMAIN}.{controller.entry.entry_id}"]["data"]
+
+
+def test_fresh_handover() -> None:
     now = dt_util.now()
-    assert _is_handover({"handover_at": (now - timedelta(minutes=2)).isoformat()}, now)
-    assert not _is_handover(
-        {"handover_at": (now - timedelta(minutes=2, seconds=1)).isoformat()}, now
+
+    def saved(at: object) -> dict:
+        return {"handover": {"at": at, "mode": MODE_ACTIVE}}
+
+    fresh = saved((now - timedelta(minutes=2)).isoformat())
+    assert _fresh_handover(fresh, now) == fresh["handover"]
+    assert _fresh_handover(saved((now - timedelta(minutes=2, seconds=1)).isoformat()), now) is None
+    assert _fresh_handover({}, now) is None
+    assert _fresh_handover(saved("garbage"), now) is None
+    assert _fresh_handover(saved(5), now) is None
+    assert _fresh_handover(saved("2026-10-13T10:00:00"), now) is None  # no time zone
+    assert _fresh_handover({"handover": "nonsense"}, now) is None
+    assert _fresh_handover({"handover": {}}, now) is None
+
+
+async def test_takes_over_only_the_same_devices(controller: HeatingController) -> None:
+    same = {"mode": MODE_SHADOW, "boiler": BOILER, "valves": {ROOM_ID: VALVE}}
+    assert controller._same_devices(same)
+    # Rooms added or removed since do not matter; a room's valve does.
+    assert controller._same_devices(same | {"valves": {}})
+    assert controller._same_devices(same | {"valves": {ROOM_ID: VALVE, "gone": SPARE_VALVE}})
+    assert not controller._same_devices(same | {"valves": {ROOM_ID: SPARE_VALVE}})
+    assert not controller._same_devices(same | {"mode": MODE_ACTIVE})
+    assert not controller._same_devices(same | {"boiler": NEW_BOILER})
+    assert not controller._same_devices(same | {"valves": "nonsense"})
+    assert not controller._same_devices({})
+
+
+def record_boiler_statuses(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Collect the boiler status of every decision from now on."""
+    statuses: list[str] = []
+    step = Engine.step
+
+    def recording_step(engine: Engine, snapshot):
+        decision = step(engine, snapshot)
+        statuses.append(decision.boiler_status)
+        return decision
+
+    monkeypatch.setattr(Engine, "step", recording_step)
+    return statuses
+
+
+async def test_reenabling_as_active_does_not_take_over_a_simulated_boiler(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded_entry.runtime_data.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    await advance(hass, freezer, timedelta(seconds=30))
+    await advance(hass, freezer, timedelta(minutes=3))
+    assert loaded_entry.runtime_data.decision.boiler_on  # Shadow: simulated only
+    await hass.config_entries.async_set_disabled_by(
+        loaded_entry.entry_id, ConfigEntryDisabler.USER
     )
-    assert not _is_handover({}, now)
-    assert not _is_handover({"handover_at": "garbage"}, now)
+    await hass.async_block_till_done()
+    # No minimum rest, so only the valve wait keeps the boiler off.
+    hass.config_entries.async_update_entry(loaded_entry, options=ACTIVE | {CONF_MIN_REST: 0})
+    statuses = record_boiler_statuses(monkeypatch)
+    await advance(hass, freezer, timedelta(seconds=30))
+    await hass.config_entries.async_set_disabled_by(loaded_entry.entry_id, None)
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data.active
+    assert not statuses[0].startswith("On")
+    assert hass.states.get(VALVE).state == "on"  # really open from now
+    for _ in range(5):
+        await advance(hass, freezer, timedelta(seconds=30))
+        assert hass.states.get(BOILER).state == "off"
+    assert not [status for status in statuses if status.startswith("On")]
+    await advance(hass, freezer, timedelta(seconds=30))  # valve open for 3 min
+    assert hass.states.get(BOILER).state == "on"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_failed_reload_turns_off_a_boiler_it_took_over(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    with patch.object(
+        hass.config_entries,
+        "async_forward_entry_setups",
+        side_effect=RuntimeError("platform broke"),
+    ):
+        hass.config_entries.async_update_entry(loaded_entry, options=ACTIVE | {CONF_MARGIN: 0.5})
+        await hass.async_block_till_done()
+    assert loaded_entry.state is ConfigEntryState.SETUP_ERROR
+    assert hass.states.get(BOILER).state == "off"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_changing_the_boiler_switch_rests_the_new_boiler(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    result = await loaded_entry.start_reconfigure_flow(hass)
+    await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_BOILER: NEW_BOILER, CONF_CALENDAR: CALENDAR}
+    )
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data.boiler_entity == NEW_BOILER
+    assert hass.states.get(BOILER).state == "off"
+    assert released(logbook)
+    assert hass.states.get(NEW_BOILER).state == "off"
+    assert hass.states.get("sensor.makerspace_heating_boiler_status").state.startswith(
+        "Off: resting"
+    )
+    await advance(hass, freezer, timedelta(minutes=4, seconds=30))
+    assert hass.states.get(NEW_BOILER).state == "off"
+    await advance(hass, freezer, timedelta(seconds=30))
+    assert hass.states.get(NEW_BOILER).state == "on"
+    assert hass.states.get(BOILER).state == "off"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_changing_a_valve_rests_the_boiler(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    result = await loaded_entry.start_subentry_reconfigure_flow(hass, ROOM_ID)
+    await hass.config_entries.subentries.async_configure(
+        result["flow_id"], {**WORKSHOP, CONF_VALVE: SPARE_VALVE}
+    )
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data.rooms[ROOM_ID].valve == SPARE_VALVE
+    assert hass.states.get(BOILER).state == "off"
+    assert hass.states.get(SPARE_VALVE).state == "on"
+    assert hass.states.get("sensor.makerspace_heating_boiler_status").state.startswith(
+        "Off: resting"
+    )
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_release_waits_for_a_boiler_command_in_flight(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, controller: HeatingController
+) -> None:
+    controller.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    assert hass.states.get(VALVE).state == "on"
+    gate = asyncio.Event()
+
+    async def slow_turn_on(call: ServiceCall) -> None:
+        await gate.wait()  # a Shelly slow to answer
+        hass.states.async_set(call.data["entity_id"], "on")
+
+    hass.services.async_register("input_boolean", "turn_on", slow_turn_on)
+    freezer.tick(timedelta(minutes=3))
+    controller.async_step()
+    await asyncio.sleep(0)
+    assert controller.decision.boiler_on
+    shutdown = hass.async_create_task(
+        controller.async_shutdown(release_boiler=True, handover=False)
+    )
+    for _ in range(10):
+        await asyncio.sleep(0)
+    gate.set()
+    await shutdown
+    await hass.async_block_till_done()
+    assert hass.states.get(BOILER).state == "off"
 
 
 async def test_going_active_does_not_take_over_a_simulated_boiler(

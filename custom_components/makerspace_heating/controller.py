@@ -38,6 +38,7 @@ from .const import (
     CALENDAR_REFRESH,
     CALENDAR_TIMEOUT,
     CALENDAR_WINDOW,
+    COMMAND_WAIT,
     CONF_BOILER,
     CONF_CALENDAR,
     DOMAIN,
@@ -73,17 +74,20 @@ _EXPECTED_CALENDAR_ERRORS = (HomeAssistantError, probatio.Invalid, KeyError, Typ
 RELEASE_MESSAGE = "turned off: Makerspace Heating is no longer in control"
 """Logbook message (after 'Boiler') when leaving Active turns the boiler off."""
 
-_HANDOVER_AT = "handover_at"
-"""Saved-state key: when an unload or reload saved it (absent after a restart)."""
+_HANDOVER = "handover"
+"""Saved-state key: what a reload handed to the next controller (absent after a restart)."""
 
 
-def _is_handover(saved: Mapping[str, Any], now: datetime) -> bool:
-    """Whether saved state was left by a reload moments ago rather than a restart."""
+def _fresh_handover(saved: Mapping[str, Any], now: datetime) -> Mapping[str, Any] | None:
+    """The handover left by a reload moments ago, or None (a restart, or unreadable)."""
+    handover = saved.get(_HANDOVER)
+    if not isinstance(handover, Mapping):
+        return None
     try:
-        handover_at = datetime.fromisoformat(saved[_HANDOVER_AT])
-        return now - handover_at <= HANDOVER_WINDOW
+        fresh = now - datetime.fromisoformat(handover["at"]) <= HANDOVER_WINDOW
     except (KeyError, TypeError, ValueError):
-        return False
+        return None
+    return handover if fresh else None
 
 
 def read_temperature(state: State | None) -> float | None:
@@ -196,6 +200,7 @@ class HeatingController:
         self._last_press: dict[str, datetime] = {}
         self._desired: dict[str, bool] = {}
         self._sent: dict[str, tuple[bool, datetime]] = {}
+        self._commands: set[asyncio.Task[None]] = set()
         self._fetching = False
         self._seen_unknown_tags: set[str] = set()
         self._closed = False
@@ -216,7 +221,9 @@ class HeatingController:
         now = dt_util.now()
         saved = await self._store.async_load()
         if saved:
-            restore(self.engine, saved, now, handover=_is_handover(saved, now))
+            handover = _fresh_handover(saved, now)
+            keep_boiler = handover is not None and self._same_devices(handover)
+            restore(self.engine, saved, now, keep_boiler=keep_boiler)
             self.events = load_events(saved.get("events"))
         tracked = [self.boiler_entity, self.calendar_entity]
         for room in self.rooms.values():
@@ -237,15 +244,28 @@ class HeatingController:
         """Stop listening and save state (on unload or reload only). Safe to call twice.
 
         release_boiler turns the boiler off, for an Active controller that is
-        not followed by an Active one. It happens once nothing is listening:
-        while listening, the change would look manual and be switched back on.
-        With handover the saved state is marked so that a controller set up
-        straight after (a reload) carries on with a running boiler.
+        not followed by an Active one on the same boiler. It happens once
+        nothing is listening (while listening, the change would look manual
+        and be switched back on) and once commands in flight have landed, so
+        a late "turn on" cannot undo it. With handover the saved state says
+        which mode and devices this controller used, so that a controller set
+        up straight after (a reload) can carry on with a running boiler if
+        nothing that matters has changed.
         """
         self._closed = True
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe.clear()
+        if self._commands:
+            _, pending = await asyncio.wait(
+                self._commands, timeout=COMMAND_WAIT.total_seconds()
+            )
+            if pending:
+                _LOGGER.warning(
+                    "%d valve or boiler commands still running after %s",
+                    len(pending),
+                    format_duration(COMMAND_WAIT),
+                )
         if release_boiler:
             await async_turn_off_boiler(self.hass, self.boiler_entity)
             if self.engine.boiler.on:
@@ -256,8 +276,32 @@ class HeatingController:
         self._raised.clear()
         data = self._saved_state()
         if handover:
-            data[_HANDOVER_AT] = dt_util.now().isoformat()
+            data[_HANDOVER] = {
+                "at": dt_util.now().isoformat(),
+                "mode": self.mode,
+                "boiler": self.boiler_entity,
+                "valves": {room_id: room.valve for room_id, room in self.rooms.items()},
+            }
         await self._store.async_save(data)
+
+    def _same_devices(self, handover: Mapping[str, Any]) -> bool:
+        """Whether a handover came from a controller in this mode on these devices.
+
+        Only then is a running boiler taken over. A Shadow or Paused boiler is
+        only simulated, and a new boiler or valve switch has not been seen
+        open, so in any other case the boiler rests first.
+        """
+        valves = handover.get("valves")
+        return (
+            handover.get("mode") == self.mode
+            and handover.get("boiler") == self.boiler_entity
+            and isinstance(valves, Mapping)
+            and all(
+                valves[room_id] == room.valve
+                for room_id, room in self.rooms.items()
+                if room_id in valves
+            )
+        )
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -437,7 +481,11 @@ class HeatingController:
             return
         self._sent[entity_id] = (on, now)
         domain = entity_id.split(".", 1)[0]
-        self._call_task(domain, SERVICE_TURN_ON if on else SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id})
+        task = self._call_task(
+            domain, SERVICE_TURN_ON if on else SERVICE_TURN_OFF, {ATTR_ENTITY_ID: entity_id}
+        )
+        self._commands.add(task)
+        task.add_done_callback(self._commands.discard)
 
     @callback
     def _note_manual_change(
@@ -514,8 +562,8 @@ class HeatingController:
         )
 
     @callback
-    def _call_task(self, domain: str, service: str, data: dict[str, Any]) -> None:
-        self.entry.async_create_task(
+    def _call_task(self, domain: str, service: str, data: dict[str, Any]) -> asyncio.Task[None]:
+        return self.entry.async_create_task(
             self.hass,
             self._call(domain, service, data),
             f"makerspace heating {domain}.{service}",

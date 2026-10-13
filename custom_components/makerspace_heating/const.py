@@ -83,6 +83,8 @@ RESEND_INTERVAL: Final = timedelta(seconds=30)
 SAVE_DELAY: Final = 10  # seconds
 HANDOVER_WINDOW: Final = timedelta(minutes=2)
 """State saved by a reload this recently is a handover, not a restart."""
+COMMAND_WAIT: Final = timedelta(seconds=10)
+"""How long stopping waits for valve and boiler commands still in flight."""
 
 EVENT_LOGBOOK_ENTRY: Final = "logbook_entry"
 SERVICE_BOOST: Final = "boost"
