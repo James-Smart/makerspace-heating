@@ -54,6 +54,7 @@ from .const import (
     SUBENTRY_ROOM,
     TICK_INTERVAL,
 )
+from .engine.boiler import stop_boiler
 from .engine.engine import BOILER_NAME, BoostError, Decision, Engine
 from .engine.model import (
     HUB,
@@ -304,8 +305,7 @@ class HeatingController:
         if release_boiler:
             await async_turn_off_boiler(self.hass, self.boiler_entity)
             if self.engine.boiler.on:
-                self.engine.boiler.on = False
-                self.engine.boiler.last_off = dt_util.now()
+                stop_boiler(self.engine.boiler, self.settings, dt_util.now())
         data = self._saved_state()
         if handover:
             data[_HANDOVER] = {

@@ -2,7 +2,11 @@
 
 from datetime import timedelta
 
-from custom_components.makerspace_heating.engine.boiler import BoilerState, step_boiler
+from custom_components.makerspace_heating.engine.boiler import (
+    BoilerState,
+    step_boiler,
+    stop_boiler,
+)
 from custom_components.makerspace_heating.engine.model import GlobalSettings
 from tests.unit.helpers import at
 
@@ -137,3 +141,21 @@ def test_names_all_calling_rooms_sorted() -> None:
         BoilerState(), SETTINGS, {"w": "Workshop", "m": "Main Space"}, since, at(10)
     )
     assert decision.status == "On: Main Space, Workshop calling"
+
+
+def test_stop_boiler_holds_the_valves_that_kept_it_company() -> None:
+    state = BoilerState()
+    step_boiler(state, SETTINGS, WORKSHOP, {"w": at(9)}, at(10))
+    stop_boiler(state, SETTINGS, at(10, 2))
+    assert (state.on, state.last_off) == (False, at(10, 2))
+    assert (state.held_rooms, state.hold_until) == ({"w"}, at(10, 5))
+    resting = step_boiler(state, SETTINGS, {}, {"w": at(9)}, at(10, 4))
+    assert resting.held_rooms == {"w"}
+
+
+def test_stop_boiler_without_keep_open() -> None:
+    settings = GlobalSettings(keep_open=timedelta(0))
+    state = BoilerState()
+    step_boiler(state, settings, WORKSHOP, {"w": at(9)}, at(10))
+    stop_boiler(state, settings, at(10, 2))
+    assert (state.on, state.held_rooms, state.hold_until) == (False, frozenset(), None)

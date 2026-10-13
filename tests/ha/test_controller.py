@@ -979,3 +979,24 @@ async def test_calendar_change_during_a_fetch_fetches_again(
     assert len(calls) == 2  # one more fetch for any number of changes
     assert controller.decision.rooms[ROOM_ID].source is Source.EVENT
     assert not controller._fetching
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_changing_the_boiler_switch_keeps_the_held_valve_open(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    hass.states.async_set(TEMPERATURE, "25.0", {"unit_of_measurement": "°C"})
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data.decision.boiler_status == "On: holding for minimum run time"
+    result = await loaded_entry.start_reconfigure_flow(hass)
+    await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_BOILER: NEW_BOILER, CONF_CALENDAR: CALENDAR}
+    )
+    await hass.async_block_till_done()
+    assert hass.states.get(BOILER).state == "off"  # the old boiler's pump overrun starts
+    for _ in range(6):  # keep-open is 3 min
+        assert hass.states.get(VALVE).state == "on"
+        await advance(hass, freezer, timedelta(seconds=30))
+    assert hass.states.get(VALVE).state == "off"
+    assert hass.states.get(NEW_BOILER).state == "off"

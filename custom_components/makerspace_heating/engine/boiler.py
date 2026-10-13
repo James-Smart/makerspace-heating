@@ -64,12 +64,8 @@ def step_boiler(
         elif state.last_on is not None and now - state.last_on < settings.min_run:
             status = "On: holding for minimum run time"
         else:
-            state.on = False
-            state.last_off = now
+            stop_boiler(state, settings, now)
             turned_off = True
-            if settings.keep_open > _ZERO:
-                state.held_rooms = state.last_open_calling
-                state.hold_until = now + settings.keep_open
             status = "Off: no rooms calling"
     else:
         rest_left = (
@@ -110,6 +106,17 @@ def step_boiler(
         turned_on=turned_on,
         turned_off=turned_off,
     )
+
+
+def stop_boiler(state: BoilerState, settings: GlobalSettings, now: datetime) -> None:
+    """The boiler turns off now: rest counts from now, and the valves that kept it
+    company stay open for the keep-open time (spec §4.3), through its pump overrun.
+    """
+    state.on = False
+    state.last_off = now
+    if settings.keep_open > _ZERO:
+        state.held_rooms = state.last_open_calling
+        state.hold_until = now + settings.keep_open
 
 
 def _names(calling: Mapping[str, str]) -> str:
