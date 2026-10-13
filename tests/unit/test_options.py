@@ -18,6 +18,7 @@ from custom_components.makerspace_heating.const import (
     CONF_VALVE,
     CONF_VALVE_WAIT,
     MODE_ACTIVE,
+    MODE_PAUSED,
     MODE_SHADOW,
 )
 from custom_components.makerspace_heating.engine.model import GlobalSettings, RoomSettings
@@ -81,6 +82,13 @@ def test_room_without_button() -> None:
 def test_control_mode() -> None:
     assert control_mode({}) == MODE_SHADOW
     assert control_mode({"control_mode": MODE_ACTIVE}) == MODE_ACTIVE
+    assert control_mode({"control_mode": MODE_PAUSED}) == MODE_PAUSED
+
+
+def test_unknown_control_mode_is_shadow() -> None:
+    assert control_mode({"control_mode": "Active"}) == MODE_SHADOW
+    assert control_mode({"control_mode": "turbo"}) == MODE_SHADOW
+    assert control_mode({"control_mode": None}) == MODE_SHADOW
 
 
 def test_notify_targets() -> None:

@@ -32,6 +32,8 @@ from .const import (
     CONF_TEMPERATURE,
     CONF_VALVE,
     CONF_VALVE_WAIT,
+    CONTROL_MODES,
+    MODE_SHADOW,
     OPTION_DEFAULTS,
     ROOM_DEFAULTS,
 )
@@ -98,8 +100,9 @@ def room_config(room_id: str, data: Mapping[str, Any]) -> RoomConfig:
 
 
 def control_mode(options: Mapping[str, Any]) -> str:
-    """Return the control mode (Shadow for a new install)."""
-    return str(options.get(CONF_CONTROL_MODE, OPTION_DEFAULTS[CONF_CONTROL_MODE]))
+    """Return the control mode: Shadow for a new install, or if the stored mode is unknown."""
+    mode = options.get(CONF_CONTROL_MODE)
+    return mode if mode in CONTROL_MODES else MODE_SHADOW
 
 
 def notify_targets(options: Mapping[str, Any]) -> tuple[list[str], list[str]]:

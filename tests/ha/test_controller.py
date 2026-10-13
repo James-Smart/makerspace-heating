@@ -124,6 +124,12 @@ async def test_starts_in_frost_protection(controller: HeatingController) -> None
     assert controller.status_prefix() == "Shadow: "
 
 
+@pytest.mark.parametrize("entry_options", [{CONF_CONTROL_MODE: "turbo"}])
+async def test_unknown_control_mode_is_shadow(controller: HeatingController) -> None:
+    assert not controller.active
+    assert controller.status_prefix() == "Shadow: "
+
+
 async def test_button_press_starts_one_boost(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory, controller: HeatingController
 ) -> None:
