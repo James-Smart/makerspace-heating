@@ -22,11 +22,11 @@ async def async_setup_entry(
 
 
 class BoostButton(RoomEntity, ButtonEntity):
-    """Start a default-length boost."""
+    """Start a default-length boost, never shortening a longer one."""
 
     def __init__(self, controller: HeatingController, room_id: str) -> None:
         super().__init__(controller, room_id, "boost")
 
     async def async_press(self) -> None:
         origin = await describe_origin(self.hass, self._context)
-        self.controller.async_boost(self.room_id, None, origin)
+        self.controller.async_press_boost(self.room_id, origin)

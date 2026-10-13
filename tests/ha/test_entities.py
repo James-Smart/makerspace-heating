@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
 
@@ -68,6 +70,41 @@ async def test_boost_button_records_dashboard_user(
     assert hass.states.get("sensor.workshop_boost_ends").state != "unknown"
     assert hass.states.get("binary_sensor.workshop_heating").state == "on"
     assert hass.states.get("sensor.workshop_boosts_today").state == "1"
+
+
+async def press_boost(hass: HomeAssistant, context: Context | None = None) -> None:
+    await hass.services.async_call(
+        "button",
+        "press",
+        {"entity_id": "button.workshop_boost"},
+        blocking=True,
+        context=context,
+    )
+
+
+async def test_boost_button_never_shortens_a_longer_boost(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry, hass_admin_user: MockUser
+) -> None:
+    await select(hass, "2 h")
+    ends = hass.states.get("sensor.workshop_boost_ends").state
+    await press_boost(hass, Context(user_id=hass_admin_user.id))
+    assert hass.states.get("sensor.workshop_boost_ends").state == ends
+    assert hass.states.get("select.workshop_boost_for").state == "2 h"
+    assert (
+        hass.states.get("sensor.workshop_status").attributes["boost_started_by"]
+        == "Automation/script"
+    )
+
+
+async def test_boost_button_rejects_off_room(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry
+) -> None:
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": "switch.workshop_enabled"}, blocking=True
+    )
+    with pytest.raises(ServiceValidationError, match="Room is off"):
+        await press_boost(hass)
+    assert hass.states.get("sensor.workshop_boost_ends").state == "unknown"
 
 
 async def test_boost_dropdown_starts_and_cancels(

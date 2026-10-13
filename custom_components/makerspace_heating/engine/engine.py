@@ -32,6 +32,9 @@ VALVE_MISMATCH_AFTER = timedelta(seconds=90)
 BOOST_OFF = "Off"
 """The boost dropdown option that means 'no boost'."""
 
+PRESS_ORIGIN = "Button"
+"""Who started a boost with the physical button (spec §7.4)."""
+
 
 class BoostError(Exception):
     """A boost request was rejected. The message is shown to the user."""
@@ -111,8 +114,12 @@ class Engine:
         """The valve state the last step asked for (False before the first step)."""
         return self._commanded.get(room_id, False)
 
-    def press(self, room_id: str, now: datetime) -> bool:
-        """Handle a physical button press. Returns True if the boost changed."""
+    def press(self, room_id: str, now: datetime, origin: str = PRESS_ORIGIN) -> bool:
+        """Handle a Boost press (the physical button unless origin says otherwise).
+
+        The boost ends at max(current end, now + default length). Returns True
+        if the boost changed.
+        """
         room = self.rooms[room_id]
         state = self.room_state[room_id]
         if not state.enabled:
@@ -121,12 +128,13 @@ class Engine:
         new_end = now + self.settings.default_boost
         current = state.boost
         if current is not None and current.ends >= new_end:
+            pressed = "button pressed" if origin == PRESS_ORIGIN else f"boost pressed by {origin}"
             self._log(
                 room,
-                f"button pressed; boost already runs until {_clock(current.ends, now)}",
+                f"{pressed}; boost already runs until {_clock(current.ends, now)}",
             )
             return False
-        state.boost = Boost(ends=new_end, length=self.settings.default_boost, origin="Button")
+        state.boost = Boost(ends=new_end, length=self.settings.default_boost, origin=origin)
         self._started(room, state.boost, now)
         return True
 

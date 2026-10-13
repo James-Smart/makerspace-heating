@@ -221,6 +221,14 @@ class HeatingController:
         self.async_step()
 
     @callback
+    def async_press_boost(self, room_id: str, origin: str) -> None:
+        """Dashboard Boost button: a button press that never shortens a boost (spec §3.4)."""
+        if not self.engine.room_state[room_id].enabled:
+            raise ServiceValidationError("Room is off")
+        self.engine.press(room_id, dt_util.now(), origin)
+        self.async_step()
+
+    @callback
     def async_cancel_boost(self, room_id: str, origin: str) -> None:
         """End a room's boost early."""
         self.engine.cancel_boost(room_id, origin, dt_util.now())

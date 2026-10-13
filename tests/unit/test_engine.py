@@ -56,6 +56,21 @@ class TestBoosts:
         log = engine.step(snap(at(10, 10))).log
         assert LogEntry("Workshop", "button pressed; boost already runs until 12:00", "w") in log
 
+    def test_press_records_its_origin(self) -> None:
+        engine = make_engine()
+        assert engine.press("w", at(10), origin="Dashboard (Sam)") is True
+        assert engine.room_state["w"].boost.origin == "Dashboard (Sam)"
+        assert engine.press("w", at(10, 10), origin="Dashboard (Sam)") is True
+        engine.boost("w", timedelta(hours=2), "Dashboard (Alex)", at(10, 15))
+        assert engine.press("w", at(10, 20), origin="Dashboard (Sam)") is False
+        assert engine.room_state["w"].boost.origin == "Dashboard (Alex)"
+        log = engine.step(snap(at(10, 20))).log
+        assert LogEntry("Workshop", "boost until 10:30 (started by Dashboard (Sam))", "w") in log
+        assert (
+            LogEntry("Workshop", "boost pressed by Dashboard (Sam); boost already runs until 12:15", "w")
+            in log
+        )
+
     def test_dashboard_boost_replaces_even_if_shorter(self) -> None:
         engine = make_engine()
         engine.boost("w", timedelta(hours=2), "Dashboard (Sam)", at(10))
