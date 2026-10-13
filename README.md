@@ -28,7 +28,7 @@ Design: `docs/superpowers/specs/2026-10-13-makerspace-heating-design.md`.
 ## Install
 
 1. In HACS, add this repository as a custom repository (type: Integration):
-   `https://github.com/CHANGE-ME/fizz-hass`.
+   `https://github.com/James-Smart/makerspace-heating`.
 2. Install **Makerspace Heating** and restart Home Assistant.
 3. Go to Settings → Devices & services → Add integration → **Makerspace Heating**.
    Choose the boiler's Shelly switch and the shared events calendar.
