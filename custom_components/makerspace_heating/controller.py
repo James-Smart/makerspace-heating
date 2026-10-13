@@ -255,6 +255,7 @@ class HeatingController:
             restore(self.engine, saved, now, keep_boiler=same_devices)
             if handover is not None:
                 restore_handover(self.engine, handover.get("engine"), same_devices)
+                self._restore_calendar_failure(handover)
             self.events = load_events(saved.get("events"))
         self._adopt_alerts(handover)
         tracked = [self.boiler_entity, self.calendar_entity]
@@ -312,6 +313,12 @@ class HeatingController:
                 "mode": self.mode,
                 "boiler": self.boiler_entity,
                 "valves": {room_id: room.valve for room_id, room in self.rooms.items()},
+                "calendar": self.calendar_entity,
+                "calendar_failing_since": (
+                    self.calendar_failing_since.isoformat()
+                    if self.calendar_failing_since is not None
+                    else None
+                ),
                 "raised": [
                     {"scope": key.scope, "kind": key.kind.value, "message": message}
                     for key, message in self._raised.items()
@@ -342,6 +349,20 @@ class HeatingController:
                 if room_id in valves
             )
         )
+
+    def _restore_calendar_failure(self, handover: Mapping[str, Any]) -> None:
+        """Carry on timing a failing calendar, so its fault is not cleared and raised again."""
+        since = handover.get("calendar_failing_since")
+        if since is None or handover.get("calendar") != self.calendar_entity:
+            return
+        try:
+            moment = datetime.fromisoformat(since)
+        except (TypeError, ValueError):
+            moment = None
+        if moment is None or moment.tzinfo is None:
+            _LOGGER.warning("Ignoring an unreadable calendar failure time in the handover")
+            return
+        self.calendar_failing_since = moment
 
     @callback
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:

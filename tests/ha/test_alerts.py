@@ -8,7 +8,8 @@ import pytest
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_STATE_CHANGED
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import (
     MockConfigEntry,
@@ -245,3 +246,28 @@ async def test_fault_logbook_entries_link_to_entities(
         "fault: Boiler switch unavailable": "binary_sensor.makerspace_heating_heating_problem",
         f"fault cleared: {MESSAGE}": "sensor.workshop_status",
     }
+
+
+@pytest.mark.parametrize("entry_options", [NOTIFY])
+async def test_reload_does_not_repeat_a_calendar_fault(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    send_message = async_mock_service(hass, "notify", "send_message")
+
+    async def broken(call: ServiceCall) -> dict:
+        raise HomeAssistantError("CalDAV server said no")
+
+    hass.services.async_register(
+        "calendar", "get_events", broken, supports_response=SupportsResponse.ONLY
+    )
+    for _ in range(7):
+        await advance(hass, freezer, timedelta(minutes=5))
+    problem = "binary_sensor.makerspace_heating_heating_problem"
+    assert hass.states.get(problem).state == "on"
+    hass.config_entries.async_update_entry(loaded_entry, options=NOTIFY | {CONF_MARGIN: 0.5})
+    await hass.async_block_till_done()
+    await advance(hass, freezer, timedelta(minutes=5))
+    assert hass.states.get(problem).state == "on"
+    assert [call.data["message"] for call in send_message] == [
+        "Heating fault: Calendar could not be read for over 30 min"
+    ]

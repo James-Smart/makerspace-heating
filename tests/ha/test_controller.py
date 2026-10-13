@@ -514,6 +514,8 @@ async def test_only_unload_marks_a_handover(
     assert handover["mode"] == MODE_SHADOW
     assert handover["boiler"] == BOILER
     assert handover["valves"] == {ROOM_ID: VALVE}
+    assert handover["calendar"] == CALENDAR
+    assert handover["calendar_failing_since"] is None
 
 
 async def test_shutdown_without_handover_leaves_no_mark(
