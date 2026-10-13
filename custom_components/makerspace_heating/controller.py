@@ -73,6 +73,7 @@ from .engine.persist import (
     dump_events,
     dump_handover,
     load_events,
+    load_moment,
     restore,
     restore_handover,
 )
@@ -102,7 +103,7 @@ def _fresh_handover(handover: Any, now: datetime) -> Mapping[str, Any] | None:
     if handover is None:
         return None
     try:
-        age = now - datetime.fromisoformat(handover["at"])
+        age = now - load_moment(handover["at"])
     except (KeyError, TypeError, ValueError):
         _LOGGER.warning("Ignoring an unreadable handover")
         return None
@@ -370,13 +371,9 @@ class HeatingController:
         if since is None or handover.get("calendar") != self.calendar_entity:
             return
         try:
-            moment = datetime.fromisoformat(since)
+            self.calendar_failing_since = load_moment(since)
         except (TypeError, ValueError):
-            moment = None
-        if moment is None or moment.tzinfo is None:
             _LOGGER.warning("Ignoring an unreadable calendar failure time in the handover")
-            return
-        self.calendar_failing_since = moment
 
     def _same_sensors(self, handover: Mapping[str, Any]) -> frozenset[str]:
         """Rooms whose temperature sensor is the one the handover was watching."""

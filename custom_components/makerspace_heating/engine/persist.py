@@ -193,12 +193,12 @@ def restore_handover(
 
 
 def _restore_faults(engine: Engine, data: Mapping[str, Any]) -> None:
-    started_at = _load_moment(data["faults_started_at"])
+    started_at = load_moment(data["faults_started_at"])
     since: dict[FaultKey, datetime] = {}
     for item in data["fault_since"]:
         key = FaultKey(str(item["scope"]), FaultKind(item["kind"]))
         if key.scope == HUB or key.scope in engine.rooms:
-            since[key] = _load_moment(item["since"])
+            since[key] = load_moment(item["since"])
     engine.faults.started_at = started_at
     engine.faults.since = since
 
@@ -207,7 +207,7 @@ def _restore_warming(
     engine: Engine, data: Mapping[str, Any], same_sensors: Collection[str]
 ) -> None:
     engine.warming.tracks = {
-        room_id: (_load_moment(item["since"]), float(item["temperature"]))
+        room_id: (load_moment(item["since"]), float(item["temperature"]))
         for room_id, item in data["warming"].items()
         if room_id in engine.rooms and room_id in same_sensors
     }
@@ -270,10 +270,10 @@ def _dump_time(moment: datetime | None) -> str | None:
 
 
 def _load_time(text: str | None) -> datetime | None:
-    return _load_moment(text) if text else None
+    return load_moment(text) if text else None
 
 
-def _load_moment(text: Any) -> datetime:
+def load_moment(text: Any) -> datetime:
     """Parse a saved time, which must carry a time zone."""
     moment = datetime.fromisoformat(text)
     if moment.tzinfo is None:
@@ -286,7 +286,7 @@ def _dump_times(times: Mapping[str, datetime]) -> dict[str, str]:
 
 
 def _load_times(raw: Mapping[str, Any], known: Mapping[str, Any]) -> dict[str, datetime]:
-    return {room_id: _load_moment(text) for room_id, text in raw.items() if room_id in known}
+    return {room_id: load_moment(text) for room_id, text in raw.items() if room_id in known}
 
 
 def _dump_boost(boost: Boost | None) -> dict[str, Any] | None:
@@ -303,7 +303,7 @@ def _load_boost(item: Mapping[str, Any] | None) -> Boost | None:
     if not item:
         return None
     return Boost(
-        ends=_load_moment(item["ends"]),
+        ends=load_moment(item["ends"]),
         length=timedelta(seconds=float(item["length_seconds"])),
         origin=str(item.get("origin", "Unknown")),
     )

@@ -1019,6 +1019,7 @@ async def test_odd_handover_does_not_stop_setup(
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data._raised == {}
+    assert entry.runtime_data.calendar_failing_since is None
     assert entry.entry_id not in hass.data[HANDOVER_KEY]  # used up
 
 
