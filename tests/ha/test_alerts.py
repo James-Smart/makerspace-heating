@@ -38,6 +38,7 @@ NOTIFY = {
     CONF_NOTIFY_ACTIONS: ["notify.mobile_app_phone"],
 }
 ISSUE_ID = f"{ROOM_ID}_temp_unavailable"
+HUB_PROBLEM = "binary_sensor.makerspace_heating_heating_problem"
 MESSAGE = "Workshop: temperature sensor unavailable"
 
 
@@ -118,7 +119,7 @@ async def raise_fault(
     ("entity_id", "back", "issue_id", "problem"),
     [
         (TEMPERATURE, "18.0", ISSUE_ID, "binary_sensor.workshop_problem"),
-        (BOILER, "off", "hub_boiler_unavailable", "binary_sensor.makerspace_heating_heating_problem"),
+        (BOILER, "off", "hub_boiler_unavailable", HUB_PROBLEM),
     ],
 )
 async def test_reload_does_not_repeat_a_fault(
@@ -243,7 +244,7 @@ async def test_fault_logbook_entries_link_to_entities(
     }
     assert linked == {
         f"fault: {MESSAGE}": "sensor.workshop_status",
-        "fault: Boiler switch unavailable": "binary_sensor.makerspace_heating_heating_problem",
+        "fault: Boiler switch unavailable": HUB_PROBLEM,
         f"fault cleared: {MESSAGE}": "sensor.workshop_status",
     }
 
@@ -262,12 +263,11 @@ async def test_reload_does_not_repeat_a_calendar_fault(
     )
     for _ in range(7):
         await advance(hass, freezer, timedelta(minutes=5))
-    problem = "binary_sensor.makerspace_heating_heating_problem"
-    assert hass.states.get(problem).state == "on"
+    assert hass.states.get(HUB_PROBLEM).state == "on"
     hass.config_entries.async_update_entry(loaded_entry, options=NOTIFY | {CONF_MARGIN: 0.5})
     await hass.async_block_till_done()
     await advance(hass, freezer, timedelta(minutes=5))
-    assert hass.states.get(problem).state == "on"
+    assert hass.states.get(HUB_PROBLEM).state == "on"
     assert [call.data["message"] for call in send_message] == [
         "Heating fault: Calendar could not be read for over 30 min"
     ]

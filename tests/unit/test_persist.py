@@ -339,7 +339,7 @@ def test_unreadable_handover_leaves_defaults(bad: object) -> None:
     [
         ({"faults_started_at": "2026-10-13T08:00:00"}, "faults"),  # no time zone
         ({"fault_since": [{"scope": "w", "kind": "no_such_kind", "since": "x"}]}, "faults"),
-        ({"warming": {"m": {"since": "2026-10-13T10:00:00+01:00", "temperature": "warm"}}}, "warming"),
+        ({"warming": {"m": {"since": at(10).isoformat(), "temperature": "warm"}}}, "warming"),
         ({"commanded": {"m": "yes"}}, "valves"),
         ({"valve_on_since": {"m": 5}}, "valves"),
         ({"mismatch_since": {"m": "garbage"}}, "valves"),
