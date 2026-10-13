@@ -14,7 +14,10 @@ Design: `docs/superpowers/specs/2026-10-13-makerspace-heating-design.md`.
   - **Frost**: always on, so rooms never drop below the frost target.
 - **The boiler** runs only while a room calls for heat and its valve has
   reported open for the *wait for valves* time. It keeps at least one valve open
-  while running and for a few minutes after stopping, and never short-cycles.
+  while running and for a few minutes after stopping. Its minimum run and rest
+  times hold within a run and across settings and room changes, so it does not
+  short-cycle. A Home Assistant restart while the boiler is on gives it one
+  minimum-rest period.
 - **Faults**, such as a dead sensor, an unresponsive valve, an unreadable
   calendar or a room heating without warming, appear under Settings → Repairs.
   They can also be sent to your phone or chat.
@@ -56,6 +59,10 @@ statuses, stats and alerts, but switches nothing.
 
 **Paused** stops all switching for maintenance or testing.
 
+Shadow and Paused never switch any device. Leaving Active (choosing Shadow or
+Paused, or disabling or deleting the integration) turns the boiler off but leaves
+the valves as they are.
+
 ## Dashboard
 
 `dashboards/makerspace-heating.yaml` is a ready-made dashboard using only built-in
@@ -84,6 +91,8 @@ the Workshop section for each room.
 - How long do the valve actuators take to open? This sets *wait for valves*.
 - Are the button inputs in button mode (event entities) or switch mode (binary
   sensors)? Both work.
+- How often do the room temperature sensors report? This affects how quickly the
+  valve margin reacts.
 
 ## Development
 
