@@ -1,0 +1,177 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Makerspace Heating",
+        "description": "Choose the boiler switch and the shared events calendar. Add rooms afterwards from the integration page.",
+        "data": {
+          "boiler_switch": "Boiler switch",
+          "calendar": "Events calendar"
+        },
+        "data_description": {
+          "boiler_switch": "The Shelly relay that calls the boiler for heat.",
+          "calendar": "Events tagged with a room's tag (for example #workshop) heat that room."
+        }
+      },
+      "reconfigure": {
+        "title": "Makerspace Heating",
+        "data": {
+          "boiler_switch": "Boiler switch",
+          "calendar": "Events calendar"
+        }
+      }
+    },
+    "error": {
+      "boiler_is_valve": "This switch is already a room's valve."
+    },
+    "abort": {
+      "single_instance_allowed": "Makerspace Heating is already set up.",
+      "reconfigure_successful": "Settings saved."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Heating settings",
+        "data": {
+          "control_mode": "Control mode",
+          "default_boost_minutes": "Default boost length",
+          "max_boost_minutes": "Maximum boost length",
+          "boost_step_minutes": "Boost dropdown step",
+          "valve_margin": "Valve margin",
+          "valve_wait_minutes": "Wait for valves",
+          "min_run_minutes": "Boiler minimum run",
+          "min_rest_minutes": "Boiler minimum rest",
+          "keep_open_minutes": "Keep valves open after the boiler stops",
+          "fault_delay_minutes": "Fault delay",
+          "not_warming_minutes": "Heating-but-not-warming time",
+          "not_warming_rise": "Heating-but-not-warming minimum rise",
+          "calendar_fail_minutes": "Calendar failure threshold",
+          "notify_entities": "Notify entities",
+          "notify_actions": "Legacy notify actions"
+        },
+        "data_description": {
+          "control_mode": "Shadow decides everything but switches nothing. Use it to compare with the old setup before switching to Active.",
+          "default_boost_minutes": "Used by the physical buttons and the dashboard Boost button.",
+          "max_boost_minutes": "The longest boost anyone can start from a dashboard or action.",
+          "valve_wait_minutes": "How long a valve must report open before the boiler fires. 0 turns the wait off.",
+          "notify_actions": "Actions such as notify.mobile_app_phone. Each fault is sent once when raised and once when cleared."
+        }
+      }
+    },
+    "error": {
+      "default_above_max": "The default boost cannot be longer than the maximum boost.",
+      "step_above_max": "The dropdown step cannot be longer than the maximum boost.",
+      "invalid_notify_action": "Use the form notify.service_name, for example notify.mobile_app_phone."
+    }
+  },
+  "config_subentries": {
+    "room": {
+      "entry_type": "Room",
+      "initiate_flow": {
+        "user": "Add room"
+      },
+      "step": {
+        "user": {
+          "title": "Add room",
+          "data": {
+            "name": "Room name",
+            "tag": "Calendar tag",
+            "valve_switch": "Valve switch",
+            "temperature_sensor": "Temperature sensor",
+            "button": "Demand-heat button",
+            "boost_target": "Boost target",
+            "event_target": "Event target",
+            "frost_target": "Frost target",
+            "preheat_minutes": "Pre-heat lead time"
+          },
+          "data_description": {
+            "tag": "Lowercase letters, digits and hyphens. Calendar events containing #tag heat this room.",
+            "button": "Optional. A Shelly input as an event entity (button mode) or a binary sensor (switch mode).",
+            "preheat_minutes": "How long before an event starts to begin heating."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit room",
+          "data": {
+            "name": "Room name",
+            "tag": "Calendar tag",
+            "valve_switch": "Valve switch",
+            "temperature_sensor": "Temperature sensor",
+            "button": "Demand-heat button",
+            "boost_target": "Boost target",
+            "event_target": "Event target",
+            "frost_target": "Frost target",
+            "preheat_minutes": "Pre-heat lead time"
+          }
+        }
+      },
+      "error": {
+        "name_required": "Enter a room name.",
+        "invalid_tag": "Use lowercase letters, digits and hyphens only.",
+        "tag_in_use": "Another room already uses this tag.",
+        "valve_is_boiler": "This switch is the boiler.",
+        "valve_in_use": "Another room already uses this valve.",
+        "frost_above_targets": "The frost target must not be above the boost and event targets."
+      },
+      "abort": {
+        "reconfigure_successful": "Room saved."
+      }
+    }
+  },
+  "selector": {
+    "control_mode": {
+      "options": {
+        "active": "Active: control the heating",
+        "shadow": "Shadow: decide but do not switch anything",
+        "paused": "Paused: stop switching for maintenance"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status": { "name": "Status" },
+      "target_temperature": { "name": "Target temperature" },
+      "boost_ends": { "name": "Boost ends" },
+      "heating_time_today": { "name": "Heating time today" },
+      "boosts_today": { "name": "Boosts today" },
+      "boiler_status": { "name": "Boiler status" },
+      "boiler_on_time_today": { "name": "Boiler on time today" },
+      "boiler_starts_today": { "name": "Boiler starts today" },
+      "upcoming_heating": { "name": "Upcoming heating" }
+    },
+    "binary_sensor": {
+      "heating": { "name": "Heating" },
+      "problem": { "name": "Problem" },
+      "boiler_demand": { "name": "Boiler demand" },
+      "heating_problem": { "name": "Heating problem" }
+    },
+    "button": {
+      "boost": { "name": "Boost" }
+    },
+    "select": {
+      "boost_for": { "name": "Boost for" }
+    },
+    "switch": {
+      "enabled": { "name": "Enabled" }
+    }
+  },
+  "issues": {
+    "fault": {
+      "title": "{message}",
+      "description": "Makerspace Heating detected this fault. It clears automatically once fixed."
+    }
+  },
+  "services": {
+    "boost": {
+      "name": "Boost",
+      "description": "Start or restart a boost in one or more rooms.",
+      "fields": {
+        "duration": {
+          "name": "Duration",
+          "description": "How long to boost for. Defaults to the default boost length and must not exceed the maximum."
+        }
+      }
+    }
+  }
+}

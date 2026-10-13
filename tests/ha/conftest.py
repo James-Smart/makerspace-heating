@@ -131,3 +131,16 @@ async def controller(
     await hass.async_block_till_done()
     yield heating
     await heating.async_shutdown()
+
+
+@pytest.fixture
+async def loaded_entry(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    devices: None,
+    calendar_calls: list[ServiceCall],
+) -> MockConfigEntry:
+    """The integration fully set up with its entity platforms."""
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    return entry
