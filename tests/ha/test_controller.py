@@ -28,6 +28,7 @@ from custom_components.makerspace_heating.const import (
     CONF_VALVE,
     DOMAIN,
     EVENT_LOGBOOK_ENTRY,
+    HANDOVER_KEY,
     MODE_ACTIVE,
     MODE_PAUSED,
     MODE_SHADOW,
@@ -498,7 +499,7 @@ async def test_failed_platform_setup_stops_controller(
     assert not entry.runtime_data._unsubscribe
 
 
-async def test_only_unload_marks_a_handover(
+async def test_only_unload_hands_over_and_only_in_memory(
     hass: HomeAssistant,
     freezer: FrozenDateTimeFactory,
     controller: HeatingController,
@@ -506,10 +507,11 @@ async def test_only_unload_marks_a_handover(
 ) -> None:
     key = f"{DOMAIN}.{controller.entry.entry_id}"
     await advance(hass, freezer, timedelta(seconds=11))
-    assert "handover" not in hass_storage[key]["data"]
     assert hass_storage[key]["data"]["events"] == []
+    assert controller.entry.entry_id not in hass.data.get(HANDOVER_KEY, {})
     await controller.async_shutdown()
-    handover = hass_storage[key]["data"]["handover"]
+    assert "handover" not in hass_storage[key]["data"]  # a restart can never see it
+    handover = hass.data[HANDOVER_KEY][controller.entry.entry_id]
     assert handover["at"] == dt_util.now().isoformat()
     assert handover["mode"] == MODE_SHADOW
     assert handover["boiler"] == BOILER
@@ -521,25 +523,91 @@ async def test_only_unload_marks_a_handover(
 async def test_shutdown_without_handover_leaves_no_mark(
     hass: HomeAssistant, controller: HeatingController, hass_storage: dict
 ) -> None:
-    await controller.async_shutdown(handover=False)
+    await controller.async_shutdown()
+    await controller.async_shutdown(handover=False)  # e.g. a failed setup after a reload
+    assert controller.entry.entry_id not in hass.data.get(HANDOVER_KEY, {})
     assert "handover" not in hass_storage[f"{DOMAIN}.{controller.entry.entry_id}"]["data"]
 
 
 def test_fresh_handover() -> None:
     now = dt_util.now()
 
-    def saved(at: object) -> dict:
-        return {"handover": {"at": at, "mode": MODE_ACTIVE}}
+    def marker(at: object) -> dict:
+        return {"at": at, "mode": MODE_ACTIVE}
 
-    fresh = saved((now - timedelta(minutes=2)).isoformat())
-    assert _fresh_handover(fresh, now) == fresh["handover"]
-    assert _fresh_handover(saved((now - timedelta(minutes=2, seconds=1)).isoformat()), now) is None
+    fresh = marker((now - timedelta(minutes=2)).isoformat())
+    assert _fresh_handover(fresh, now) == fresh
+    assert _fresh_handover(marker(now.isoformat()), now) is not None
+    assert _fresh_handover(marker((now - timedelta(minutes=2, seconds=1)).isoformat()), now) is None
+    assert _fresh_handover(marker((now + timedelta(seconds=1)).isoformat()), now) is None  # future
+    assert _fresh_handover(None, now) is None
+    assert _fresh_handover(marker("garbage"), now) is None
+    assert _fresh_handover(marker(5), now) is None
+    assert _fresh_handover(marker("2026-10-13T10:00:00"), now) is None  # no time zone
+    assert _fresh_handover("nonsense", now) is None
     assert _fresh_handover({}, now) is None
-    assert _fresh_handover(saved("garbage"), now) is None
-    assert _fresh_handover(saved(5), now) is None
-    assert _fresh_handover(saved("2026-10-13T10:00:00"), now) is None  # no time zone
-    assert _fresh_handover({"handover": "nonsense"}, now) is None
-    assert _fresh_handover({"handover": {}}, now) is None
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+@pytest.mark.parametrize("legacy", ["handover", "handover_at"])
+async def test_a_stored_handover_is_never_read(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    devices: None,
+    calendar_calls: list,
+    hass_storage: dict,
+    legacy: str,
+) -> None:
+    """A marker on disk (a crash soon after a reload) must not look like a reload."""
+    now = dt_util.now()
+    handover = {
+        "at": now.isoformat(),
+        "mode": MODE_ACTIVE,
+        "boiler": BOILER,
+        "valves": {ROOM_ID: VALVE},
+    }
+    store_holds(
+        hass_storage,
+        entry,
+        {
+            "rooms": {
+                ROOM_ID: {
+                    "enabled": True,
+                    "boost": {
+                        "ends": (now + timedelta(minutes=20)).isoformat(),
+                        "length_seconds": 1800,
+                        "origin": "test",
+                    },
+                }
+            },
+            "boiler": {
+                "on": True,
+                "last_on": (now - timedelta(minutes=1)).isoformat(),
+                "last_open_calling": [ROOM_ID],
+            },
+            legacy: handover if legacy == "handover" else now.isoformat(),
+        },
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    decision = entry.runtime_data.decision
+    assert not decision.boiler_on
+    assert decision.boiler_status.startswith("Off: resting")
+    assert hass.states.get(BOILER).state == "off"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_a_future_dated_handover_is_not_a_reload(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    await boiler_running(hass, freezer, loaded_entry)
+    assert await hass.config_entries.async_unload(loaded_entry.entry_id)
+    handover = hass.data[HANDOVER_KEY][loaded_entry.entry_id]
+    handover["at"] = (dt_util.now() + timedelta(hours=5)).isoformat()  # clock was behind
+    assert await hass.config_entries.async_setup(loaded_entry.entry_id)
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data.decision.boiler_status.startswith("Off: resting")
+    assert hass.states.get(BOILER).state == "off"
 
 
 async def test_takes_over_only_the_same_devices(controller: HeatingController) -> None:
@@ -928,19 +996,23 @@ async def test_odd_handover_does_not_stop_setup(
     calendar_calls: list,
     hass_storage: dict,
 ) -> None:
-    handover = {
+    hass.data.setdefault(HANDOVER_KEY, {})[entry.entry_id] = {
         "at": dt_util.now().isoformat(),
         "mode": MODE_SHADOW,
         "boiler": BOILER,
         "valves": {ROOM_ID: VALVE},
+        "temperatures": "nonsense",
+        "calendar": CALENDAR,
+        "calendar_failing_since": "garbage",
         "raised": [{"scope": ROOM_ID, "kind": "no_such_kind"}, 5],
         "engine": {"faults_started_at": 5, "warming": "x", "commanded": [1]},
     }
-    store_holds(hass_storage, entry, {"boiler": {"on": True}, "handover": handover})
+    store_holds(hass_storage, entry, {"boiler": {"on": True}})
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
     assert entry.state is ConfigEntryState.LOADED
     assert entry.runtime_data._raised == {}
+    assert entry.entry_id not in hass.data[HANDOVER_KEY]  # used up
 
 
 async def test_calendar_change_during_a_fetch_fetches_again(

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any, Final
 
+from homeassistant.util.hass_dict import HassKey
+
 DOMAIN: Final = "makerspace_heating"
 NAME: Final = "Makerspace Heating"
 SUBENTRY_ROOM: Final = "room"
@@ -81,8 +83,14 @@ CALENDAR_TIMEOUT: Final = timedelta(seconds=60)
 BUTTON_DEBOUNCE: Final = timedelta(seconds=2)
 RESEND_INTERVAL: Final = timedelta(seconds=30)
 SAVE_DELAY: Final = 10  # seconds
+HANDOVER_KEY: Final[HassKey[dict[str, dict[str, Any]]]] = HassKey(f"{DOMAIN}_handover")
+"""In memory only, by entry id: what an unloading controller hands to the next one.
+
+Never stored, so a restart (even a crash moments after a reload) cannot mistake
+itself for a reload.
+"""
 HANDOVER_WINDOW: Final = timedelta(minutes=2)
-"""State saved by a reload this recently is a handover, not a restart."""
+"""A handover left this recently is a reload; an older one is ignored."""
 COMMAND_WAIT: Final = timedelta(seconds=10)
 """How long stopping waits for valve and boiler commands still in flight."""
 

@@ -11,7 +11,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
-from .const import CONF_BOILER, DOMAIN, HUB_MODEL, MODE_ACTIVE, NAME
+from .const import CONF_BOILER, DOMAIN, HANDOVER_KEY, HUB_MODEL, MODE_ACTIVE, NAME
 from .controller import HeatingController, async_turn_off_boiler
 from .engine.persist import STORE_VERSION
 from .options import control_mode
@@ -89,6 +89,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MakerspaceHeatingConfig
 
 async def async_remove_entry(hass: HomeAssistant, entry: MakerspaceHeatingConfigEntry) -> None:
     """After deletion (and unload): release the boiler, delete saved state and issues."""
+    hass.data.get(HANDOVER_KEY, {}).pop(entry.entry_id, None)
     # A disabled entry already turned the boiler off when it was disabled.
     if control_mode(entry.options) == MODE_ACTIVE and entry.disabled_by is None:
         await async_turn_off_boiler(hass, entry.data[CONF_BOILER])

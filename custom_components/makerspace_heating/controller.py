@@ -44,6 +44,7 @@ from .const import (
     CONF_CALENDAR,
     DOMAIN,
     EVENT_LOGBOOK_ENTRY,
+    HANDOVER_KEY,
     HANDOVER_WINDOW,
     MODE_ACTIVE,
     MODE_PAUSED,
@@ -92,21 +93,19 @@ _EXPECTED_CALENDAR_ERRORS = (HomeAssistantError, probatio.Invalid, KeyError, Typ
 RELEASE_MESSAGE = "turned off: Makerspace Heating is no longer in control"
 """Logbook message (after 'Boiler') when leaving Active turns the boiler off."""
 
-_HANDOVER = "handover"
-"""Saved-state key: what a reload handed to the next controller (absent after a restart)."""
+def _fresh_handover(handover: Any, now: datetime) -> Mapping[str, Any] | None:
+    """The handover if an unload left it moments ago, otherwise None.
 
-
-def _fresh_handover(saved: Mapping[str, Any], now: datetime) -> Mapping[str, Any] | None:
-    """The handover left by a reload moments ago, or None (a restart, or unreadable)."""
-    handover = saved.get(_HANDOVER)
+    One dated in the future (a clock that has jumped) is not trusted.
+    """
     if handover is None:
         return None
     try:
-        fresh = now - datetime.fromisoformat(handover["at"]) <= HANDOVER_WINDOW
+        age = now - datetime.fromisoformat(handover["at"])
     except (KeyError, TypeError, ValueError):
-        _LOGGER.warning("Ignoring an unreadable handover in the saved state")
+        _LOGGER.warning("Ignoring an unreadable handover")
         return None
-    return handover if fresh else None
+    return handover if timedelta(0) <= age <= HANDOVER_WINDOW else None
 
 
 def read_temperature(state: State | None) -> float | None:
@@ -249,15 +248,15 @@ class HeatingController:
         if saved is not None and not isinstance(saved, dict):
             _LOGGER.warning("Ignoring unreadable saved state: %.80r", saved)
             saved = None
-        handover: Mapping[str, Any] | None = None
+        handovers = self.hass.data.get(HANDOVER_KEY, {})
+        handover = _fresh_handover(handovers.pop(self.entry.entry_id, None), now)
+        same_devices = handover is not None and self._same_devices(handover)
         if saved:
-            handover = _fresh_handover(saved, now)
-            same_devices = handover is not None and self._same_devices(handover)
             restore(self.engine, saved, now, keep_boiler=same_devices)
-            if handover is not None:
-                restore_handover(self.engine, handover.get("engine"), same_devices)
-                self._restore_calendar_failure(handover)
             self.events = load_events(saved.get("events"))
+        if handover is not None:
+            restore_handover(self.engine, handover.get("engine"), same_devices)
+            self._restore_calendar_failure(handover)
         self._adopt_alerts(handover)
         tracked = [self.boiler_entity, self.calendar_entity]
         for room in self.rooms.values():
@@ -281,12 +280,12 @@ class HeatingController:
         not followed by an Active one on the same boiler. It happens once
         nothing is listening (while listening, the change would look manual
         and be switched back on) and once commands in flight have landed, so
-        a late "turn on" cannot undo it. With handover the saved state says
-        which mode and devices this controller used, so that a controller set
-        up straight after (a reload) can carry on with a running boiler if
-        nothing that matters has changed. Raised faults and their Repairs
-        issues are handed over too, so a reload does not announce them again;
-        without handover the issues are deleted.
+        a late "turn on" cannot undo it. With handover this controller leaves
+        a note in memory (never in storage) saying which mode and devices it
+        used, so that a controller set up straight after (a reload) can carry
+        on with a running boiler if nothing that matters has changed. Raised
+        faults and their Repairs issues are handed over too, so a reload does
+        not announce them again; without handover the issues are deleted.
         """
         self._closed = True
         for unsubscribe in self._unsubscribe:
@@ -306,30 +305,32 @@ class HeatingController:
             await async_turn_off_boiler(self.hass, self.boiler_entity)
             if self.engine.boiler.on:
                 stop_boiler(self.engine.boiler, self.settings, dt_util.now())
-        data = self._saved_state()
+        handovers = self.hass.data.setdefault(HANDOVER_KEY, {})
         if handover:
-            data[_HANDOVER] = {
-                "at": dt_util.now().isoformat(),
-                "mode": self.mode,
-                "boiler": self.boiler_entity,
-                "valves": {room_id: room.valve for room_id, room in self.rooms.items()},
-                "calendar": self.calendar_entity,
-                "calendar_failing_since": (
-                    self.calendar_failing_since.isoformat()
-                    if self.calendar_failing_since is not None
-                    else None
-                ),
-                "raised": [
-                    {"scope": key.scope, "kind": key.kind.value, "message": message}
-                    for key, message in self._raised.items()
-                ],
-                "engine": dump_handover(self.engine),
-            }
+            handovers[self.entry.entry_id] = self._handover_marker()
         else:
+            handovers.pop(self.entry.entry_id, None)
             for key in self._raised:
                 ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
             self._raised.clear()
-        await self._store.async_save(data)
+        await self._store.async_save(self._saved_state())
+
+    def _handover_marker(self) -> dict[str, Any]:
+        """What the next controller needs to carry on where this one stopped."""
+        failing_since = self.calendar_failing_since
+        return {
+            "at": dt_util.now().isoformat(),
+            "mode": self.mode,
+            "boiler": self.boiler_entity,
+            "valves": {room_id: room.valve for room_id, room in self.rooms.items()},
+            "calendar": self.calendar_entity,
+            "calendar_failing_since": failing_since.isoformat() if failing_since else None,
+            "raised": [
+                {"scope": key.scope, "kind": key.kind.value, "message": message}
+                for key, message in self._raised.items()
+            ],
+            "engine": dump_handover(self.engine),
+        }
 
     def _same_devices(self, handover: Mapping[str, Any]) -> bool:
         """Whether a handover came from a controller in this mode on these devices.
