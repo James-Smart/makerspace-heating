@@ -220,6 +220,19 @@ class TestFaults:
         assert not room.calling
         assert room.valve_on
 
+    def test_mismatch_timer_restarts_after_valve_outage(self) -> None:
+        engine = make_engine()
+        engine.press("w", at(10))
+        engine.step(snap(at(10)))
+        assert engine.step(snap(at(10, 0, 30))).rooms["w"].calling  # mismatch starts
+        engine.step(snap(at(10, 1), w_valve=None))
+        engine.step(snap(at(10, 3), w_valve=None))
+        back = engine.step(snap(at(10, 3, 30))).rooms["w"]  # back, still mismatched
+        assert back.calling
+        assert back.status != "Fault: valve not responding"
+        assert engine.step(snap(at(10, 4, 59))).rooms["w"].calling
+        assert engine.step(snap(at(10, 5))).rooms["w"].status == "Fault: valve not responding"
+
     def test_no_mismatch_faults_when_not_checking_valves(self) -> None:
         engine = make_engine()
         engine.press("w", at(10))

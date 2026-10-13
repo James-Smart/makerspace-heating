@@ -275,6 +275,8 @@ class Engine:
                 f"{room.name}: valve switch unavailable"
             )
             fault = fault or "valve unavailable"
+            # A mismatch from before the outage must not fault the moment it is back.
+            self._mismatch_since.pop(room.room_id, None)
         elif not check_valves:
             self._mismatch_since.pop(room.room_id, None)
         elif self._valve_mismatched(room.room_id, inputs.valve_on, now):
