@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -352,13 +352,21 @@ class HeatingController:
     @callback
     def async_boost(self, room_id: str, length: timedelta | None, origin: str) -> None:
         """Start a boost (default length when length is None)."""
+        self.async_boost_rooms([room_id], length, origin)
+
+    @callback
+    def async_boost_rooms(
+        self, room_ids: Sequence[str], length: timedelta | None, origin: str
+    ) -> None:
+        """Start the same boost in several rooms, or in none if any room refuses it."""
+        if length is None:
+            length = self.settings.default_boost
+        now = dt_util.now()
         try:
-            self.engine.boost(
-                room_id,
-                length if length is not None else self.settings.default_boost,
-                origin,
-                dt_util.now(),
-            )
+            for room_id in room_ids:
+                self.engine.check_boost(room_id, length)
+            for room_id in room_ids:
+                self.engine.boost(room_id, length, origin, now)
         except BoostError as err:
             raise ServiceValidationError(str(err)) from err
         self.async_step()

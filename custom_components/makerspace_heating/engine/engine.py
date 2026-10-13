@@ -141,17 +141,21 @@ class Engine:
         self._started(room, state.boost, now)
         return True
 
-    def boost(self, room_id: str, length: timedelta, origin: str, now: datetime) -> Boost:
-        """Start or replace a boost of a chosen length (dashboard or action)."""
-        room = self.rooms[room_id]
-        state = self.room_state[room_id]
-        if not state.enabled:
+    def check_boost(self, room_id: str, length: timedelta) -> None:
+        """Raise BoostError if a boost of this length cannot start in the room."""
+        if not self.room_state[room_id].enabled:
             raise BoostError("Room is off")
         if length <= timedelta(0) or length > self.settings.max_boost:
             raise BoostError(
                 "Boost length must be more than 0 and at most "
                 f"{format_duration(self.settings.max_boost)}"
             )
+
+    def boost(self, room_id: str, length: timedelta, origin: str, now: datetime) -> Boost:
+        """Start or replace a boost of a chosen length (dashboard or action)."""
+        self.check_boost(room_id, length)
+        room = self.rooms[room_id]
+        state = self.room_state[room_id]
         state.boost = Boost(ends=now + length, length=length, origin=origin)
         self._started(room, state.boost, now)
         return state.boost

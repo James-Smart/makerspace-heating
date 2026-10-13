@@ -71,6 +71,17 @@ class TestBoosts:
             in log
         )
 
+    def test_check_boost_changes_nothing(self) -> None:
+        engine = make_engine()
+        engine.check_boost("w", timedelta(hours=1))
+        with pytest.raises(BoostError, match="at most 2 h"):
+            engine.check_boost("w", timedelta(hours=3))
+        engine.set_enabled("m", False)
+        with pytest.raises(BoostError, match="Room is off"):
+            engine.check_boost("m", timedelta(minutes=30))
+        assert engine.room_state["w"].boost is None
+        assert engine.stats.room("w").boosts == 0
+
     def test_dashboard_boost_replaces_even_if_shorter(self) -> None:
         engine = make_engine()
         engine.boost("w", timedelta(hours=2), "Dashboard (Sam)", at(10))

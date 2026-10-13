@@ -28,8 +28,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
         controller = _controller(hass)
         room_ids = _room_ids(hass, controller, call.data[ATTR_DEVICE_ID])
         origin = await describe_origin(hass, call.context)
-        for room_id in room_ids:
-            controller.async_boost(room_id, call.data.get(ATTR_DURATION), origin)
+        controller.async_boost_rooms(room_ids, call.data.get(ATTR_DURATION), origin)
 
     hass.services.async_register(DOMAIN, SERVICE_BOOST, handle_boost, schema=BOOST_SCHEMA)
 
