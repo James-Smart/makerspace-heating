@@ -92,8 +92,43 @@ def test_new_room_waiting_while_on_holds_previous_valve() -> None:
     assert waiting.on
     assert waiting.status == "On: Main Space calling"
     assert waiting.held_rooms == {"w"}
-    opened = step_boiler(state, SETTINGS, main, {"w": at(9), "m": at(10, 2)}, at(10, 2))
+    since = {"w": at(9), "m": at(10, 2)}
+    # Main's relay is on but its actuator is still opening.
+    assert step_boiler(state, SETTINGS, main, since, at(10, 2)).held_rooms == {"w"}
+    assert step_boiler(state, SETTINGS, main, since, at(10, 5)).held_rooms == frozenset()
+
+
+def test_held_room_is_released_once_new_room_has_been_open_for_valve_wait() -> None:
+    state = BoilerState()
+    step_boiler(state, SETTINGS, WORKSHOP, {"w": at(9)}, at(10))
+    main = {"m": "Main Space"}
+    since = {"w": at(9), "m": at(10, 1)}
+    assert step_boiler(state, SETTINGS, main, since, at(10, 3, 59)).held_rooms == {"w"}
+    opened = step_boiler(state, SETTINGS, main, since, at(10, 4))
+    assert opened.on
     assert opened.held_rooms == frozenset()
+    assert state.last_open_calling == {"m"}
+    # Main is now the room that keeps the boiler company.
+    holding = step_boiler(state, SETTINGS, {}, since, at(10, 4, 30))
+    assert holding.held_rooms == {"m"}
+
+
+def test_zero_wait_releases_held_room_as_soon_as_new_valve_reports_on() -> None:
+    settings = GlobalSettings(valve_wait=timedelta(0))
+    state = BoilerState()
+    step_boiler(state, settings, WORKSHOP, {"w": at(9)}, at(10))
+    main = {"m": "Main Space"}
+    assert step_boiler(state, settings, main, {"w": at(9)}, at(10, 1)).held_rooms == {"w"}
+    since = {"w": at(9), "m": at(10, 2)}
+    assert step_boiler(state, settings, main, since, at(10, 2)).held_rooms == frozenset()
+
+
+def test_turn_on_remembers_only_ready_rooms() -> None:
+    state = BoilerState()
+    both = {"w": "Workshop", "m": "Main Space"}
+    fired = step_boiler(state, SETTINGS, both, {"w": at(9), "m": at(10)}, at(10))
+    assert fired.turned_on
+    assert state.last_open_calling == {"w"}
 
 
 def test_names_all_calling_rooms_sorted() -> None:

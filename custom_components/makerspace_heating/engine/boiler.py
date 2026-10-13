@@ -46,13 +46,19 @@ def step_boiler(
 
     calling maps room id -> room name for rooms calling for heat.
     valve_on_since maps room id -> when its valve was first seen reporting on.
+    A calling room counts as open once its valve has reported on for the
+    valve wait: a relay reports on long before its thermal actuator opens.
     """
-    open_calling = frozenset(room for room in calling if room in valve_on_since)
+    ready_calling = frozenset(
+        room
+        for room in calling
+        if room in valve_on_since and now - valve_on_since[room] >= settings.valve_wait
+    )
     turned_on = turned_off = False
 
     if state.on:
-        if open_calling:
-            state.last_open_calling = open_calling
+        if ready_calling:
+            state.last_open_calling = ready_calling
         if calling:
             status = f"On: {_names(calling)} calling"
         elif state.last_on is not None and now - state.last_on < settings.min_run:
@@ -71,17 +77,14 @@ def step_boiler(
             if state.last_off is not None
             else _ZERO
         )
-        ready = [
-            room for room in open_calling if now - valve_on_since[room] >= settings.valve_wait
-        ]
         if not calling:
             status = "Off: no rooms calling"
         elif rest_left > _ZERO:
             status = f"Off: resting ({format_duration(rest_left)} left)"
-        elif ready:
+        elif ready_calling:
             state.on = True
             state.last_on = now
-            state.last_open_calling = open_calling
+            state.last_open_calling = ready_calling
             state.held_rooms = frozenset()
             state.hold_until = None
             turned_on = True
@@ -93,7 +96,7 @@ def step_boiler(
             )
 
     if state.on:
-        held = frozenset() if open_calling else state.last_open_calling
+        held = frozenset() if ready_calling else state.last_open_calling
     elif state.hold_until is not None and now < state.hold_until:
         held = state.held_rooms
     else:

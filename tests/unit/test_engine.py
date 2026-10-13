@@ -177,6 +177,23 @@ class TestHeatingCycle:
         assert not closed.rooms["w"].valve_on
         assert closed.rooms["w"].status == "Boost until 10:30, at temperature"
 
+    def test_warm_room_keeps_its_valve_open_until_the_next_room_has_opened(self) -> None:
+        engine = make_engine()
+        engine.press("w", at(10))
+        engine.step(snap(at(10), w_valve=True))
+        assert engine.step(snap(at(10, 3), w_valve=True)).boiler_on
+        engine.press("m", at(10, 5))
+        handoff = engine.step(snap(at(10, 5), w_temp=19.0, w_valve=True, m_valve=True))
+        assert handoff.boiler_on
+        assert handoff.rooms["w"].valve_on  # Main's actuator is still opening
+        assert handoff.rooms["w"].status == "Boost until 10:30, valve held open for boiler"
+        still = engine.step(snap(at(10, 7, 59), w_temp=19.0, w_valve=True, m_valve=True))
+        assert still.rooms["w"].valve_on
+        opened = engine.step(snap(at(10, 8), w_temp=19.0, w_valve=True, m_valve=True))
+        assert opened.boiler_on
+        assert not opened.rooms["w"].valve_on
+        assert opened.rooms["m"].valve_on
+
     def test_off_room_still_gets_frost_protection(self) -> None:
         engine = make_engine()
         engine.set_enabled("w", False)
