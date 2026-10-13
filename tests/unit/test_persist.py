@@ -3,9 +3,14 @@
 import json
 from datetime import timedelta
 
+import pytest
+
 from custom_components.makerspace_heating.engine.engine import Engine
 from custom_components.makerspace_heating.engine.model import (
+    HUB,
     CalendarEvent,
+    FaultKey,
+    FaultKind,
     GlobalSettings,
     RoomInputs,
     RoomSettings,
@@ -14,8 +19,10 @@ from custom_components.makerspace_heating.engine.model import (
 from custom_components.makerspace_heating.engine.persist import (
     dump,
     dump_events,
+    dump_handover,
     load_events,
     restore,
+    restore_handover,
 )
 from tests.unit.helpers import at
 
@@ -189,3 +196,126 @@ def test_boost_length_survives() -> None:
     restore(fresh, saved(engine), at(10, 1))
     assert fresh.room_state["w"].boost.length == timedelta(hours=1)
     assert fresh.room_state["w"].boost.origin == "Dashboard (Sam)"
+
+
+TEMP = FaultKey("w", FaultKind.TEMP_UNAVAILABLE)
+BOILER_DOWN = FaultKey(HUB, FaultKind.BOILER_UNAVAILABLE)
+
+
+def handed_over(engine: Engine) -> dict:
+    return json.loads(json.dumps(dump_handover(engine)))
+
+
+def faulty_engine() -> Engine:
+    """Workshop's sensor and the boiler switch failed at 10:00; Main is heating."""
+    engine = make_engine()
+    engine.press("m", at(9, 50))
+    rooms = {"w": RoomInputs(None, False), "m": RoomInputs(15.0, True)}
+    for moment in (at(10), at(10, 5)):
+        decision = engine.step(Snapshot(now=moment, rooms=rooms, boiler_available=False))
+    assert set(decision.faults) == {TEMP, BOILER_DOWN}
+    return engine
+
+
+def test_handover_keeps_fault_timing() -> None:
+    engine = faulty_engine()
+    fresh = make_engine(at(10, 6))
+    restore_handover(fresh, handed_over(engine), devices_unchanged=False)
+
+    assert fresh.faults.started_at == at(8)
+    assert fresh.faults.since == {TEMP: at(10), BOILER_DOWN: at(10)}
+    assert fresh.warming.tracks == {"m": (at(10), 15.0)}
+    rooms = {"w": RoomInputs(None, False), "m": RoomInputs(15.0, True)}
+    decision = fresh.step(Snapshot(now=at(10, 6), rooms=rooms, boiler_available=False))
+    assert set(decision.faults) == {TEMP, BOILER_DOWN}  # no fresh grace or delay
+
+
+def valves_step(engine: Engine, moment, m_valve: bool) -> None:
+    rooms = {"w": RoomInputs(18.0, False), "m": RoomInputs(15.0, m_valve)}
+    engine.step(Snapshot(now=moment, rooms=rooms))
+
+
+def test_handover_keeps_valve_tracking_only_for_unchanged_devices() -> None:
+    engine = faulty_engine()
+    valves_step(engine, at(10, 6), m_valve=False)
+    assert engine.mismatch_since == {"m": at(10, 6)}
+
+    kept = make_engine(at(10, 7))
+    restore_handover(kept, handed_over(engine), devices_unchanged=True)
+    assert kept.commanded == {"w": False, "m": True}
+    assert kept.commanded_valve("m") is True
+    assert kept.valve_on_since == {}
+    assert kept.mismatch_since == {"m": at(10, 6)}
+
+    valves_step(engine, at(10, 7), m_valve=True)
+    kept = make_engine(at(10, 8))
+    restore_handover(kept, handed_over(engine), devices_unchanged=True)
+    assert kept.valve_on_since == {"m": at(10, 7)}
+
+    changed = make_engine(at(10, 8))
+    restore_handover(changed, handed_over(engine), devices_unchanged=False)
+    assert (changed.commanded, changed.valve_on_since, changed.mismatch_since) == ({}, {}, {})
+
+
+def test_handover_drops_rooms_that_have_gone() -> None:
+    engine = faulty_engine()
+    fresh = Engine(GlobalSettings(), [MAIN], at(10, 6))
+    restore_handover(fresh, handed_over(engine), devices_unchanged=True)
+    assert fresh.faults.since == {BOILER_DOWN: at(10)}
+    assert set(fresh.commanded) == {"m"}
+    assert set(fresh.valve_on_since) == {"m"}
+
+
+def restored_sections(engine: Engine) -> dict[str, bool]:
+    return {
+        "faults": engine.faults.started_at != at(10, 6) or bool(engine.faults.since),
+        "warming": bool(engine.warming.tracks),
+        "valves": bool(engine.commanded or engine.valve_on_since or engine.mismatch_since),
+    }
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        None,
+        "nonsense",
+        [1, 2],
+        {
+            "faults_started_at": "garbage",
+            "fault_since": "nonsense",
+            "warming": ["m"],
+            "commanded": {"m": "yes"},
+            "valve_on_since": {"m": 5},
+            "mismatch_since": "nonsense",
+        },
+    ],
+)
+def test_unreadable_handover_leaves_defaults(bad: object) -> None:
+    fresh = make_engine(at(10, 6))
+    restore_handover(fresh, bad, devices_unchanged=True)
+    assert restored_sections(fresh) == {"faults": False, "warming": False, "valves": False}
+
+
+@pytest.mark.parametrize(
+    ("change", "section"),
+    [
+        ({"faults_started_at": "2026-10-13T08:00:00"}, "faults"),  # no time zone
+        ({"fault_since": [{"scope": "w", "kind": "no_such_kind", "since": "x"}]}, "faults"),
+        ({"warming": {"m": {"since": "2026-10-13T10:00:00+01:00", "temperature": "warm"}}}, "warming"),
+        ({"commanded": {"m": "yes"}}, "valves"),
+        ({"valve_on_since": {"m": 5}}, "valves"),
+        ({"mismatch_since": {"m": "garbage"}}, "valves"),
+    ],
+)
+def test_one_unreadable_handover_section_is_skipped(change: dict, section: str) -> None:
+    engine = faulty_engine()
+    valves_step(engine, at(10, 5, 30), m_valve=True)
+    good = handed_over(engine)
+    fresh = make_engine(at(10, 6))
+    restore_handover(fresh, good, devices_unchanged=True)
+    assert restored_sections(fresh) == {"faults": True, "warming": True, "valves": True}
+
+    fresh = make_engine(at(10, 6))
+    restore_handover(fresh, good | change, devices_unchanged=True)
+    restored = restored_sections(fresh)
+    assert restored == {name: name != section for name in restored}

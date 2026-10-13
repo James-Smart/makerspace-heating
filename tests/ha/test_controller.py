@@ -793,3 +793,26 @@ async def test_no_action_after_shutdown(
     await hass.async_block_till_done()
     assert calls == []
     assert hass.states.get(VALVE).state == "off"
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_reload_keeps_timing_a_stuck_valve(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, loaded_entry: MockConfigEntry
+) -> None:
+    loaded_entry.runtime_data.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+
+    async def stuck(call: ServiceCall) -> None:
+        """The relay no longer answers."""
+
+    hass.services.async_register("input_boolean", "turn_on", stuck)
+    await hass.services.async_call(
+        "input_boolean", "turn_off", {"entity_id": VALVE}, blocking=True
+    )
+    await advance(hass, freezer, timedelta(seconds=60))
+    hass.config_entries.async_update_entry(loaded_entry, options=ACTIVE | {CONF_MARGIN: 0.5})
+    await hass.async_block_till_done()
+    assert loaded_entry.runtime_data.decision.rooms[ROOM_ID].calling
+    await advance(hass, freezer, timedelta(seconds=30))  # 90 s without following commands
+    room = loaded_entry.runtime_data.decision.rooms[ROOM_ID]
+    assert room.status == "Fault: valve not responding"

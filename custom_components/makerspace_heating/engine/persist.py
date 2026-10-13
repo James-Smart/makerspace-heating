@@ -9,7 +9,7 @@ from typing import Any
 
 from .boiler import BoilerState
 from .engine import Engine
-from .model import Boost, CalendarEvent
+from .model import HUB, Boost, CalendarEvent, FaultKey, FaultKind
 from .stats import RoomStats, Stats
 
 _LOGGER = logging.getLogger(__name__)
@@ -138,6 +138,84 @@ def _restore_last_step(engine: Engine, data: Mapping[str, Any], now: datetime) -
     engine.last_step = _load_time(data.get("last_step"))
 
 
+def dump_handover(engine: Engine) -> dict[str, Any]:
+    """Return the fault timing and valve tracking a reload hands to the next engine.
+
+    This is not kept across a restart, which starts both afresh.
+    """
+    return {
+        "faults_started_at": engine.faults.started_at.isoformat(),
+        "fault_since": [
+            {"scope": key.scope, "kind": key.kind.value, "since": since.isoformat()}
+            for key, since in engine.faults.since.items()
+        ],
+        "warming": {
+            room_id: {"since": since.isoformat(), "temperature": temperature}
+            for room_id, (since, temperature) in engine.warming.tracks.items()
+        },
+        "commanded": dict(engine.commanded),
+        "valve_on_since": _dump_times(engine.valve_on_since),
+        "mismatch_since": _dump_times(engine.mismatch_since),
+    }
+
+
+def restore_handover(engine: Engine, data: Any, devices_unchanged: bool) -> None:
+    """Load what a reload handed over into a fresh engine.
+
+    Fault timing carries on, so a raised fault stays raised and a pending
+    one keeps its delay. Valve tracking (commands, open and mismatch times)
+    only carries on when the devices and mode are unchanged. Rooms that no
+    longer exist are dropped; an unreadable section keeps its defaults.
+    """
+    if not isinstance(data, Mapping):
+        _LOGGER.warning("Ignoring unreadable handover state")
+        return
+    sections: dict[str, Callable[[], None]] = {
+        "faults": lambda: _restore_faults(engine, data),
+        "warming": lambda: _restore_warming(engine, data),
+    }
+    if devices_unchanged:
+        sections["valves"] = lambda: _restore_valves(engine, data)
+    for name, section in sections.items():
+        try:
+            section()
+        except Exception:  # noqa: BLE001 - odd saved state must never stop setup
+            _LOGGER.warning("Ignoring unreadable handover state in %s", name)
+
+
+def _restore_faults(engine: Engine, data: Mapping[str, Any]) -> None:
+    started_at = _load_moment(data["faults_started_at"])
+    since: dict[FaultKey, datetime] = {}
+    for item in data["fault_since"]:
+        key = FaultKey(str(item["scope"]), FaultKind(item["kind"]))
+        if key.scope == HUB or key.scope in engine.rooms:
+            since[key] = _load_moment(item["since"])
+    engine.faults.started_at = started_at
+    engine.faults.since = since
+
+
+def _restore_warming(engine: Engine, data: Mapping[str, Any]) -> None:
+    engine.warming.tracks = {
+        room_id: (_load_moment(item["since"]), float(item["temperature"]))
+        for room_id, item in data["warming"].items()
+        if room_id in engine.rooms
+    }
+
+
+def _restore_valves(engine: Engine, data: Mapping[str, Any]) -> None:
+    commanded: dict[str, bool] = {}
+    for room_id, on in data["commanded"].items():
+        if not isinstance(on, bool):
+            raise TypeError(f"commanded valve state is not true/false: {on!r}")
+        if room_id in engine.rooms:
+            commanded[room_id] = on
+    valve_on_since = _load_times(data["valve_on_since"], engine.rooms)
+    mismatch_since = _load_times(data["mismatch_since"], engine.rooms)
+    engine.commanded = commanded
+    engine.valve_on_since = valve_on_since
+    engine.mismatch_since = mismatch_since
+
+
 def dump_events(events: Iterable[CalendarEvent]) -> list[dict[str, Any]]:
     """Return the cached calendar events as JSON-compatible dicts."""
     return [
@@ -182,6 +260,22 @@ def _dump_time(moment: datetime | None) -> str | None:
 
 def _load_time(text: str | None) -> datetime | None:
     return datetime.fromisoformat(text) if text else None
+
+
+def _load_moment(text: Any) -> datetime:
+    """Parse a saved time, which must carry a time zone."""
+    moment = datetime.fromisoformat(text)
+    if moment.tzinfo is None:
+        raise ValueError(f"saved time has no time zone: {text}")
+    return moment
+
+
+def _dump_times(times: Mapping[str, datetime]) -> dict[str, str]:
+    return {room_id: moment.isoformat() for room_id, moment in times.items()}
+
+
+def _load_times(raw: Mapping[str, Any], known: Mapping[str, Any]) -> dict[str, datetime]:
+    return {room_id: _load_moment(text) for room_id, text in raw.items() if room_id in known}
 
 
 def _dump_boost(boost: Boost | None) -> dict[str, Any] | None:

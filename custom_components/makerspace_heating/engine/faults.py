@@ -19,24 +19,25 @@ class FaultTracker:
     """Turns fault conditions into raised faults once they have lasted long enough."""
 
     def __init__(self, started_at: datetime) -> None:
-        self._started_at = started_at
-        self._since: dict[FaultKey, datetime] = {}
+        self.started_at = started_at
+        self.since: dict[FaultKey, datetime] = {}
+        """When each present condition was first seen."""
 
     def update(
         self, conditions: Mapping[FaultKey, str], settings: GlobalSettings, now: datetime
     ) -> dict[FaultKey, str]:
         """Record this step's conditions and return the raised ones (key -> message)."""
-        for key in list(self._since):
+        for key in list(self.since):
             if key not in conditions:
-                del self._since[key]
+                del self.since[key]
         for key in conditions:
-            self._since.setdefault(key, now)
-        if now - self._started_at < STARTUP_GRACE:
+            self.since.setdefault(key, now)
+        if now - self.started_at < STARTUP_GRACE:
             return {}
         return {
             key: message
             for key, message in conditions.items()
-            if now - self._since[key] >= _delay(key, settings)
+            if now - self.since[key] >= _delay(key, settings)
         }
 
 
@@ -48,7 +49,8 @@ class WarmingWatch:
     """Spots rooms that call for heat for a long time without warming up."""
 
     def __init__(self) -> None:
-        self._tracks: dict[str, tuple[datetime, float]] = {}
+        self.tracks: dict[str, tuple[datetime, float]] = {}
+        """Calling rooms: when the watch started and the temperature then."""
 
     def update(
         self,
@@ -60,12 +62,12 @@ class WarmingWatch:
     ) -> str | None:
         """Return a fault message if the room has called too long without warming."""
         if not calling or temperature is None:
-            self._tracks.pop(room_id, None)
+            self.tracks.pop(room_id, None)
             return None
-        since, start_temperature = self._tracks.setdefault(room_id, (now, temperature))
+        since, start_temperature = self.tracks.setdefault(room_id, (now, temperature))
         rise = temperature - start_temperature
         if rise >= settings.not_warming_rise:
-            self._tracks[room_id] = (now, temperature)
+            self.tracks[room_id] = (now, temperature)
             return None
         if now - since >= settings.not_warming_after:
             return (

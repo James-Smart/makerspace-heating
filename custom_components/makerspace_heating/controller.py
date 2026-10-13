@@ -54,8 +54,16 @@ from .const import (
     TICK_INTERVAL,
 )
 from .engine.engine import BoostError, Decision, Engine
-from .engine.model import CalendarEvent, FaultKey, RoomInputs, Snapshot
-from .engine.persist import STORE_VERSION, dump, dump_events, load_events, restore
+from .engine.model import HUB, CalendarEvent, FaultKey, FaultKind, RoomInputs, Snapshot
+from .engine.persist import (
+    STORE_VERSION,
+    dump,
+    dump_events,
+    dump_handover,
+    load_events,
+    restore,
+    restore_handover,
+)
 from .engine.schedule import UpcomingEvent, parse_events
 from .engine.schedule import upcoming as list_upcoming
 from .engine.timefmt import format_duration
@@ -220,11 +228,15 @@ class HeatingController:
         """Restore state, subscribe to inputs and make the first decision."""
         now = dt_util.now()
         saved = await self._store.async_load()
+        handover: Mapping[str, Any] | None = None
         if saved:
             handover = _fresh_handover(saved, now)
-            keep_boiler = handover is not None and self._same_devices(handover)
-            restore(self.engine, saved, now, keep_boiler=keep_boiler)
+            same_devices = handover is not None and self._same_devices(handover)
+            restore(self.engine, saved, now, keep_boiler=same_devices)
+            if handover is not None:
+                restore_handover(self.engine, handover.get("engine"), same_devices)
             self.events = load_events(saved.get("events"))
+        self._adopt_alerts(handover)
         tracked = [self.boiler_entity, self.calendar_entity]
         for room in self.rooms.values():
             tracked += [room.valve, room.temperature]
@@ -250,7 +262,9 @@ class HeatingController:
         a late "turn on" cannot undo it. With handover the saved state says
         which mode and devices this controller used, so that a controller set
         up straight after (a reload) can carry on with a running boiler if
-        nothing that matters has changed.
+        nothing that matters has changed. Raised faults and their Repairs
+        issues are handed over too, so a reload does not announce them again;
+        without handover the issues are deleted.
         """
         self._closed = True
         for unsubscribe in self._unsubscribe:
@@ -271,9 +285,6 @@ class HeatingController:
             if self.engine.boiler.on:
                 self.engine.boiler.on = False
                 self.engine.boiler.last_off = dt_util.now()
-        for key in self._raised:
-            ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
-        self._raised.clear()
         data = self._saved_state()
         if handover:
             data[_HANDOVER] = {
@@ -281,7 +292,16 @@ class HeatingController:
                 "mode": self.mode,
                 "boiler": self.boiler_entity,
                 "valves": {room_id: room.valve for room_id, room in self.rooms.items()},
+                "raised": [
+                    {"scope": key.scope, "kind": key.kind.value, "message": message}
+                    for key, message in self._raised.items()
+                ],
+                "engine": dump_handover(self.engine),
             }
+        else:
+            for key in self._raised:
+                ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
+            self._raised.clear()
         await self._store.async_save(data)
 
     def _same_devices(self, handover: Mapping[str, Any]) -> bool:
@@ -504,21 +524,37 @@ class HeatingController:
         )
 
     @callback
+    def _adopt_alerts(self, handover: Mapping[str, Any] | None) -> None:
+        """Carry on the faults a reload handed over; delete any other issues left behind.
+
+        Handed-over faults were already announced, so they are not announced
+        again; if one has cleared meanwhile, the first decision says so.
+        Issues of rooms that have gone, or left by a restart, go quietly.
+        """
+        raised = handover.get("raised") if handover is not None else None
+        try:
+            for item in raised or []:
+                key = FaultKey(str(item["scope"]), FaultKind(item["kind"]))
+                if key.scope == HUB or key.scope in self.rooms:
+                    self._raised[key] = str(item["message"])
+        except Exception:  # noqa: BLE001 - odd saved state must never stop setup
+            _LOGGER.warning("Ignoring unreadable handed-over faults")
+            self._raised.clear()
+        for key, message in self._raised.items():
+            self._create_issue(key, message)  # no change if it is still there
+        kept = {self._issue_id(key) for key in self._raised}
+        for domain, issue_id in list(ir.async_get(self.hass).issues):
+            if domain == DOMAIN and issue_id not in kept:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    @callback
     def _update_alerts(self, raised: dict[FaultKey, str]) -> None:
         """Create and remove Repairs issues and send notifications on changes."""
         for key, message in raised.items():
             if key in self._raised:
                 continue
             self._raised[key] = message
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                self._issue_id(key),
-                is_fixable=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="fault",
-                translation_placeholders={"message": message},
-            )
+            self._create_issue(key, message)
             self._log_entry(NAME, f"fault: {message}")
             self._notify(f"Heating fault: {message}")
         for key in [key for key in self._raised if key not in raised]:
@@ -526,6 +562,18 @@ class HeatingController:
             ir.async_delete_issue(self.hass, DOMAIN, self._issue_id(key))
             self._log_entry(NAME, f"fault cleared: {message}")
             self._notify(f"Heating fault cleared: {message}")
+
+    @callback
+    def _create_issue(self, key: FaultKey, message: str) -> None:
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            self._issue_id(key),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="fault",
+            translation_placeholders={"message": message},
+        )
 
     @staticmethod
     def _issue_id(key: FaultKey) -> str:

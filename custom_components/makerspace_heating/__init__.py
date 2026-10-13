@@ -5,8 +5,9 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.typing import ConfigType
 
@@ -87,8 +88,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: MakerspaceHeatingConfig
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: MakerspaceHeatingConfigEntry) -> None:
-    """After deletion (and unload): release the boiler and delete the saved state."""
+    """After deletion (and unload): release the boiler, delete saved state and issues."""
     # A disabled entry already turned the boiler off when it was disabled.
     if control_mode(entry.options) == MODE_ACTIVE and entry.disabled_by is None:
         await async_turn_off_boiler(hass, entry.data[CONF_BOILER])
     await Store(hass, STORE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+    for domain, issue_id in list(ir.async_get(hass).issues):
+        if domain == DOMAIN:
+            ir.async_delete_issue(hass, DOMAIN, issue_id)

@@ -101,18 +101,18 @@ class Engine:
         self.boiler = BoilerState()
         self.stats = Stats()
         self.last_step: datetime | None = None
-        self._faults = FaultTracker(started_at=now)
-        self._warming = WarmingWatch()
-        self._valve_on_since: dict[str, datetime] = {}
-        self._mismatch_since: dict[str, datetime] = {}
-        self._commanded: dict[str, bool] = {}
+        self.faults = FaultTracker(started_at=now)
+        self.warming = WarmingWatch()
+        self.valve_on_since: dict[str, datetime] = {}
+        self.mismatch_since: dict[str, datetime] = {}
+        self.commanded: dict[str, bool] = {}
         self._prev_calling: frozenset[str] = frozenset()
         self._prev_boiler_on = False
         self._pending_log: list[LogEntry] = []
 
     def commanded_valve(self, room_id: str) -> bool:
         """The valve state the last step asked for (False before the first step)."""
-        return self._commanded.get(room_id, False)
+        return self.commanded.get(room_id, False)
 
     def press(self, room_id: str, now: datetime, origin: str = PRESS_ORIGIN) -> bool:
         """Handle a Boost press (the physical button unless origin says otherwise).
@@ -206,7 +206,7 @@ class Engine:
             room_calling = state.wants and fault is None
             if room_calling:
                 calling[room_id] = room.name
-            warming = self._warming.update(
+            warming = self.warming.update(
                 room_id, room_calling, inputs.temperature, settings, now
             )
             if warming is not None:
@@ -222,7 +222,7 @@ class Engine:
                 f"{format_duration(settings.calendar_fail_after)}"
             )
 
-        boiler = step_boiler(self.boiler, settings, calling, self._valve_on_since, now)
+        boiler = step_boiler(self.boiler, settings, calling, self.valve_on_since, now)
         if boiler.turned_on:
             self.stats.boiler_starts += 1
             names = ", ".join(sorted(calling.values()))
@@ -230,16 +230,16 @@ class Engine:
         if boiler.turned_off:
             log.append(LogEntry("Boiler", "turned off (no rooms calling)"))
 
-        raised = self._faults.update(conditions, settings, now)
+        raised = self.faults.update(conditions, settings, now)
         rooms_out: dict[str, RoomDecision] = {}
         for room_id, (demand, fault) in evaluated.items():
             state = self.room_state[room_id]
             is_calling = room_id in calling
             held = room_id in boiler.held_rooms
             valve_on = state.wants or held
-            if self._commanded.get(room_id) != valve_on:
-                self._mismatch_since.pop(room_id, None)
-            self._commanded[room_id] = valve_on
+            if self.commanded.get(room_id) != valve_on:
+                self.mismatch_since.pop(room_id, None)
+            self.commanded[room_id] = valve_on
             rooms_out[room_id] = RoomDecision(
                 room_id=room_id,
                 source=demand.source,
@@ -284,9 +284,9 @@ class Engine:
             )
             fault = fault or "valve unavailable"
             # A mismatch from before the outage must not fault the moment it is back.
-            self._mismatch_since.pop(room.room_id, None)
+            self.mismatch_since.pop(room.room_id, None)
         elif not check_valves:
-            self._mismatch_since.pop(room.room_id, None)
+            self.mismatch_since.pop(room.room_id, None)
         elif self._valve_mismatched(room.room_id, inputs.valve_on, now):
             conditions[FaultKey(room.room_id, FaultKind.VALVE_MISMATCH)] = (
                 f"{room.name}: valve is not following commands"
@@ -299,18 +299,18 @@ class Engine:
         return fault
 
     def _valve_mismatched(self, room_id: str, reported: bool, now: datetime) -> bool:
-        commanded = self._commanded.get(room_id)
+        commanded = self.commanded.get(room_id)
         if commanded is None or commanded == reported:
-            self._mismatch_since.pop(room_id, None)
+            self.mismatch_since.pop(room_id, None)
             return False
-        since = self._mismatch_since.setdefault(room_id, now)
+        since = self.mismatch_since.setdefault(room_id, now)
         return now - since >= VALVE_MISMATCH_AFTER
 
     def _track_valve(self, room_id: str, reported: bool | None, now: datetime) -> None:
         if reported:
-            self._valve_on_since.setdefault(room_id, now)
+            self.valve_on_since.setdefault(room_id, now)
         else:
-            self._valve_on_since.pop(room_id, None)
+            self.valve_on_since.pop(room_id, None)
 
     def _started(self, room: RoomSettings, boost: Boost, now: datetime) -> None:
         self.stats.roll(now.date())
