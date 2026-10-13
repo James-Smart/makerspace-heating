@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 
 import pytest
 from freezegun.api import FrozenDateTimeFactory
-from homeassistant.core import HomeAssistant, State
+from homeassistant.core import HomeAssistant, ServiceCall, State, SupportsResponse
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import (
@@ -237,3 +238,57 @@ async def test_off_room_rejects_boost(
     controller.async_set_enabled(ROOM_ID, False)
     with pytest.raises(ServiceValidationError, match="Room is off"):
         controller.async_boost(ROOM_ID, None, "test")
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_active_boost_logs_once(
+    hass: HomeAssistant, controller: HeatingController
+) -> None:
+    logbook = async_capture_events(hass, EVENT_LOGBOOK_ENTRY)
+    controller.async_boost(ROOM_ID, timedelta(hours=1), "Dashboard (Sam)")
+    await hass.async_block_till_done()
+    assert hass.states.get(VALVE).state == "on"
+    started = [
+        event
+        for event in logbook
+        if event.data["name"] == "Workshop"
+        and event.data["message"].startswith("boost until ")
+        and event.data["message"].endswith("(started by Dashboard (Sam))")
+    ]
+    assert len(started) == 1
+
+
+@pytest.mark.parametrize("entry_options", [ACTIVE])
+async def test_no_action_after_shutdown(
+    hass: HomeAssistant,
+    freezer: FrozenDateTimeFactory,
+    controller: HeatingController,
+    calendar_events: list[dict],
+) -> None:
+    controller.async_boost(ROOM_ID, None, "test")
+    await hass.async_block_till_done()
+    assert hass.states.get(VALVE).state == "on"
+
+    gate = asyncio.Event()
+
+    async def slow(call: ServiceCall) -> dict:
+        await gate.wait()
+        return {CALENDAR: {"events": calendar_events}}
+
+    hass.services.async_register(
+        "calendar", "get_events", slow, supports_response=SupportsResponse.ONLY
+    )
+    fetch = hass.async_create_task(controller.async_refresh_calendar())
+    await asyncio.sleep(0)
+    await controller.async_shutdown()
+    calls: list[int] = []
+    controller.async_add_listener(lambda: calls.append(1))
+    await hass.services.async_call(
+        "input_boolean", "turn_off", {"entity_id": VALVE}, blocking=True
+    )
+    freezer.tick(timedelta(seconds=31))
+    gate.set()
+    await fetch
+    await hass.async_block_till_done()
+    assert calls == []
+    assert hass.states.get(VALVE).state == "off"

@@ -155,6 +155,7 @@ class HeatingController:
         self._sent: dict[str, tuple[bool, datetime]] = {}
         self._fetching = False
         self._seen_unknown_tags: set[str] = set()
+        self._closed = False
 
     @property
     def active(self) -> bool:
@@ -186,6 +187,7 @@ class HeatingController:
 
     async def async_shutdown(self) -> None:
         """Stop listening and save state. Safe to call twice."""
+        self._closed = True
         for unsubscribe in self._unsubscribe:
             unsubscribe()
         self._unsubscribe.clear()
@@ -226,6 +228,8 @@ class HeatingController:
     @callback
     def async_step(self) -> None:
         """Read inputs, run the engine and act on the decision."""
+        if self._closed:
+            return
         now = dt_util.now()
         states = self.hass.states
         rooms: dict[str, RoomInputs] = {}
@@ -248,11 +252,11 @@ class HeatingController:
             calendar_failing_since=self.calendar_failing_since,
             check_valves=self.active,
         )
-        self.decision = self.engine.step(snapshot)
+        decision = self.decision = self.engine.step(snapshot)
         self.upcoming, self.unknown_tags = list_upcoming(self.events, self._tag_names, now)
         if self.active:
-            self._apply(self.decision, now)
-        for line in self.decision.log:
+            self._apply(decision, now)
+        for line in decision.log:
             self._log_entry(line.name, line.message)
         self._store.async_delay_save(lambda: dump(self.engine), SAVE_DELAY)
         for listener in list(self._listeners):
@@ -260,7 +264,7 @@ class HeatingController:
 
     async def async_refresh_calendar(self) -> None:
         """Fetch the next 24 hours of events from the calendar."""
-        if self._fetching:
+        if self._fetching or self._closed:
             return
         self._fetching = True
         now = dt_util.now()
@@ -279,10 +283,14 @@ class HeatingController:
             raw = response[self.calendar_entity]["events"]  # type: ignore[index]
             events = parse_events(raw, dt_util.get_default_time_zone())
         except (HomeAssistantError, probatio.Invalid, KeyError, TypeError) as err:
+            if self._closed:
+                return
             if self.calendar_failing_since is None:
                 self.calendar_failing_since = now
             _LOGGER.warning("Could not read calendar %s: %s", self.calendar_entity, err)
         else:
+            if self._closed:
+                return
             self.calendar_failing_since = None
             self.events = tuple(events)
             self._warn_unknown_tags(now)
@@ -375,7 +383,10 @@ class HeatingController:
     @callback
     def _call_task(self, domain: str, service: str, data: dict[str, Any]) -> None:
         self.entry.async_create_task(
-            self.hass, self._call(domain, service, data), f"makerspace heating {domain}.{service}"
+            self.hass,
+            self._call(domain, service, data),
+            f"makerspace heating {domain}.{service}",
+            eager_start=False,
         )
 
     async def _call(self, domain: str, service: str, data: dict[str, Any]) -> None:
